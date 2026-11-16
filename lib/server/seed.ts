@@ -54,7 +54,10 @@ export function ensureSeeded(): Promise<void> {
       if (r.history.length) console.warn(`[swapup] test trade-ins on a retired quote already in a pickup or collected — not cancelled, the owner decides: ${r.history.join(", ")}`);
       const reworded = await rewordQuoteTexts();
       if (reworded.length) console.log(`[swapup] cases whose stored words asked staff to type a trade-in price, reworded: ${reworded.join(", ")}`);
-    })();
+    })().catch((err) => {
+      g.__swapup_seed = undefined;
+      throw err;
+    });
   }
   return g.__swapup_seed;
 }

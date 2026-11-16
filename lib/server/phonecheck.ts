@@ -609,7 +609,7 @@ export async function phonecheckForCase(u: SessionUser, caseId: string) {
   const imeis = [v.imei, v.imei2].filter((x): x is string => !!x);
   const rows = await query<PcRow>(
     `SELECT * FROM phonecheck_records
-     WHERE (case_id = $1 ${imeis.length ? `OR imei = ANY($2::text[]) OR imei2 = ANY($2::text[])` : ""}) AND (store_id IS NULL OR store_id = $3)
+     WHERE (case_id = $1 ${imeis.length ? `OR imei = ANY($2::text[]) OR imei2 = ANY($2::text[])` : ""}) AND (store_id IS NULL OR store_id = $${imeis.length ? 3 : 2})
      ORDER BY COALESCE(tested_at, received_at) DESC LIMIT 20`,
     imeis.length ? [caseId, imeis, v.storeId] : [caseId, v.storeId]
   );

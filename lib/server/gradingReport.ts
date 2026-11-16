@@ -178,7 +178,8 @@ function passportIdOf(s: SessionRow | null): string | null {
 }
 
 async function live(c: CaseRowLite): Promise<Live> {
-  const faults = parseJson<FaultId[]>(c.faults, []);
+  const rawFaults = parseJson<unknown>(c.faults, []);
+  const faults: FaultId[] = Array.isArray(rawFaults) ? (rawFaults as FaultId[]) : [];
   const condition = parseJson<ConditionAnswers | null>(c.condition, null);
   const camera = parseJson<CaseCameraCheck | null>(c.camera_check, null);
   const models = await tradeModels();
@@ -311,7 +312,14 @@ export type ReportVersion = { version: number; sha256: string; issuedAt: string;
 export type ReportEnvelope = ReportVersion & { schema: typeof REPORT_SCHEMA; body: ReportBody };
 
 const versionOf = (r: VersionRow): ReportVersion => ({ version: r.version, sha256: r.sha256, issuedAt: r.issued_at, reason: r.reason, final: !!r.final });
-const envelopeOf = (r: VersionRow): ReportEnvelope => ({ schema: REPORT_SCHEMA, ...versionOf(r), body: JSON.parse(r.body) as ReportBody });
+const bodyJsonOf = (r: VersionRow): ReportBody | null => {
+  const parsed = parseJson<ReportBody | null>(r.body, null);
+  return parsed && typeof parsed === "object" && parsed.grade ? parsed : null;
+};
+const envelopeOf = (r: VersionRow): ReportEnvelope | null => {
+  const body = bodyJsonOf(r);
+  return body ? { schema: REPORT_SCHEMA, ...versionOf(r), body } : null;
+};
 
 async function latestRow(caseId: string): Promise<VersionRow | null> {
   return queryOne<VersionRow>(`SELECT * FROM grading_reports WHERE case_id = $1 ORDER BY version DESC LIMIT 1`, [caseId]);
@@ -371,8 +379,12 @@ export async function issueIfChanged(caseId: string, reason: ReportReason, userI
 
 /** v1 for a case tested before reports existed — only when there is evidence (issueIfChanged checks). */
 async function ensureBackfill(caseId: string): Promise<void> {
-  const has = await queryOne<{ '?column?': number }>(`SELECT 1 FROM grading_reports WHERE case_id = $1 LIMIT 1`, [caseId]);
-  if (!has) await issueIfChanged(caseId, "backfill", null);
+  try {
+    const has = await queryOne<{ '?column?': number }>(`SELECT 1 FROM grading_reports WHERE case_id = $1 LIMIT 1`, [caseId]);
+    if (!has) await issueIfChanged(caseId, "backfill", null);
+  } catch (e) {
+    console.error(`[swapup] grading report backfill failed for ${caseId}:`, e);
+  }
 }
 
 /** Never let the report break the counter: a failure to issue is logged, and the edit stands. */
@@ -417,17 +429,20 @@ export async function caseGrading(caseId: string, viewer: "staff" | "partner"): 
   const frozen = viewer === "partner" ? await partnerRow(caseId) : !EDITABLE.includes(c.status) ? await finalRow(caseId) : null;
   if (viewer === "partner" && !frozen) return null;
   if (frozen) {
-    const g = (JSON.parse(frozen.body) as ReportBody).grade;
-    return {
-      status: g.status,
-      label: g.label,
-      grade: g.grade,
-      letter: g.letter,
-      final: g.final,
-      why: g.reasons[0]?.text ?? null,
-      report: reportRef(c.report_token, frozen, true),
-      phonecheck: viewer === "partner" ? null : await pullState({ storeId: c.store_id, status: c.status, imei: c.imei, imei2: c.imei2 }),
-    };
+    const parsedBody = bodyJsonOf(frozen);
+    if (parsedBody) {
+      const g = parsedBody.grade;
+      return {
+        status: g.status,
+        label: g.label,
+        grade: g.grade,
+        letter: g.letter,
+        final: g.final,
+        why: g.reasons?.[0]?.text ?? null,
+        report: reportRef(c.report_token, frozen, true),
+        phonecheck: viewer === "partner" ? null : await pullState({ storeId: c.store_id, status: c.status, imei: c.imei, imei2: c.imei2 }),
+      };
+    }
   }
   const l = await live(c);
   const g = l.grading;
@@ -471,8 +486,8 @@ export type CustomerGrading = { status: Grading["status"]; label: string; grade:
  */
 export async function customerGradingFor(caseId: string): Promise<CustomerGrading | null> {
   const r = await latestRow(caseId);
-  if (!r) return null;
-  const g = (JSON.parse(r.body) as ReportBody).grade;
+  const g = r ? bodyJsonOf(r)?.grade : null;
+  if (!g) return null;
   return { status: g.status, label: g.label, grade: g.grade, letter: g.letter, final: g.final };
 }
 
@@ -574,7 +589,9 @@ async function versionByToken(token: string, v: string | null): Promise<{ row: V
 /** GET /api/r/<token>[?v=n] — anyone with the link. The latest version, or version n. Never a list of versions. */
 export async function publicReport(token: string, v: string | null): Promise<ReportEnvelope> {
   const { row } = await versionByToken(token, v);
-  return envelopeOf(row);
+  const env = envelopeOf(row);
+  if (!env) throw new HttpError(404, "Report not found.");
+  return env;
 }
 
 /** GradeIQ serves one flat folder: /api/uploads/<file>, file = [A-Za-z0-9._-]+ (its own traversal guard). */

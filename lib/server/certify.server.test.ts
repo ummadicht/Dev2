@@ -187,11 +187,11 @@ let sessionId = "";
 let ticket = "";
 
 test("the customer's phone tests itself and is asked nothing about condition; the camera's grade fails (AI out of credit)", async () => {
-  const created = sessions.createTestSession(adv, { customerName: "Asha Rao" });
+  const created = await sessions.createTestSession(adv, { customerName: "Asha Rao" });
   sessionId = created.session.id;
   caseId = created.session.caseId;
   await until("the GradeIQ session", () => (db().prepare(`SELECT gradeiq_state FROM test_sessions WHERE id = ?`).get(sessionId) as { gradeiq_state: string }).gradeiq_state === "ready");
-  const joined = sessions.joinByCode(
+  const joined = await sessions.joinByCode(
     {
       code: created.session.code,
       installId: "install-certify-0001",
@@ -206,11 +206,11 @@ test("the customer's phone tests itself and is asked nothing about condition; th
   assert.equal(screen0.released, false);
   // No camera display test on the phone (the camera's sweep is it), no battery reading yet.
   const at = new Date().toISOString();
-  sessions.deviceResults(ticket, { results: DEFAULT_PLAN.filter((p) => p.id !== "display" && p.id !== "battery_health").map((p) => ({ testId: p.id, outcome: "pass", at, detail: null })) });
+  await sessions.deviceResults(ticket, { results: DEFAULT_PLAN.filter((p) => p.id !== "display" && p.id !== "battery_health").map((p) => ({ testId: p.id, outcome: "pass", at, detail: null })) });
   // The battery reader is off (its AI refused the call): the phone is told so — not "try a clearer screenshot".
   await assert.rejects(sessions.deviceBattery(ticket, { image: "data:image/png;base64,iVBORw0KGgo=" }), (e: Error & { status?: number }) => e.status === 409 && /Battery reader isn't available/.test(e.message) && !/402|gemini|credit/i.test(e.message));
   assert.equal(giq.ocr, 1);
-  sessions.deviceComplete(ticket);
+  await sessions.deviceComplete(ticket);
   // The staff read pulls what GradeIQ has: the photos, a stand-in grade, unread colour frames.
   await sessions.getTestSession(adv, sessionId);
   await until("the GradeIQ snapshot", () => !!(db().prepare(`SELECT gradeiq_snapshot FROM test_sessions WHERE id = ?`).get(sessionId) as { gradeiq_snapshot: string | null }).gradeiq_snapshot);
@@ -231,19 +231,19 @@ test("Check the phone: the card lists screen, body and liquid with the Screen ro
   assert.equal(v.certify?.colours, "off", "no colour loop after the tests");
   assert.deepEqual(v.certify?.notes, { screen: "Screen not fully camera-checked — look at it." }, "2 of 6 colours photographed, unread");
   // Testing, finished: the phone is never told to show the colours — the customer gets the result screen.
-  sessions.devicePhase(ticket, { phase: "test" });
-  assert.equal(sessions.deviceStatus(ticket).colours, false);
-  sessions.devicePhase(ticket, { phase: "done" });
-  assert.equal(sessions.deviceStatus(ticket).colours, false);
+  await sessions.devicePhase(ticket, { phase: "test" });
+  assert.equal((await sessions.deviceStatus(ticket)).colours, false);
+  await sessions.devicePhase(ticket, { phase: "done" });
+  assert.equal((await sessions.deviceStatus(ticket)).colours, false);
   // A phone that still says "colours" (an older build mid-loop at the update) changes nothing on the card.
-  sessions.devicePhase(ticket, { phase: "colours" });
+  await sessions.devicePhase(ticket, { phase: "colours" });
   v = (await sessions.getTestSession(adv, sessionId)).session;
   assert.equal(v.certify?.colours, "off");
   assert.equal(v.phonePhase, "colours");
-  assert.equal(sessions.deviceStatus(ticket).colours, false, "and it is told to stop");
-  sessions.devicePhase(ticket, { phase: "done" });
+  assert.equal((await sessions.deviceStatus(ticket)).colours, false, "and it is told to stop");
+  await sessions.devicePhase(ticket, { phase: "done" });
   // A device read never carries the staff card.
-  assert.ok(!("certify" in sessions.deviceStatus(ticket)));
+  assert.ok(!("certify" in (await sessions.deviceStatus(ticket))));
 });
 
 test("certify: only store staff, one tap per row, by name; the same tap twice changes nothing", async () => {
@@ -268,7 +268,7 @@ test("certify: only store staff, one tap per row, by name; the same tap twice ch
   assert.equal(card.canEdit, true);
   assert.equal(card.colours, "off");
   assert.ok(!JSON.stringify(card).includes("usr_"));
-  assert.equal(sessions.deviceStatus(ticket).colours, false);
+  assert.equal((await sessions.deviceStatus(ticket)).colours, false);
   assert.equal((await sessions.getTestSession(adv, sessionId)).session.certify?.colours, "off");
 
   // Lines or spots puts display_lines on the case; OK again takes it off.
@@ -293,14 +293,14 @@ test("certify: only store staff, one tap per row, by name; the same tap twice ch
 test("Apply: the camera's failed grade doesn't block it; what was certified stands; the SwapUp grade is Good (B), provisional for the unread battery and a screen looked at without the colours", async () => {
   const out = await sessions.applyTestSession(adv, sessionId);
   assert.equal(out.session.status, "applied");
-  const c = cases.getCase(adv, caseId);
+  const c = await cases.getCase(adv, caseId);
   assert.equal(c.camera?.status, "failed");
   assert.equal(c.camera?.lcd.aiOff, true);
   assert.equal(c.condition?.body, "scuffed");
   assert.equal(c.condition?.screen, "flawless");
   assert.equal(c.grading?.status, "graded");
   assert.equal(c.grading?.label, "Good (B) · provisional");
-  const live = gr.gradingReportFor(adv, caseId).live!;
+  const live = (await gr.gradingReportFor(adv, caseId)).live!;
   // Provisional only for the battery (its reader is off). The screen rests on the advisor's look — the sweep
   // saw 2 of 6 colours and no colour loop exists since SUP-260 — which is disclosed (DS11), never a
   // provisional nobody can clear (PV13 retired, review 0.9.4).
@@ -309,18 +309,18 @@ test("Apply: the camera's failed grade doesn't block it; what was certified stan
   const display = live.tests.find((t) => t.id === "display")!;
   assert.equal(display.result, "passed");
   assert.deepEqual(display.sources.map((s) => [s.source, s.by, s.colours ?? false]), [["advisor", "Rahul Desai", false]]);
-  assert.equal(sessions.deviceStatus(ticket).colours, false);
+  assert.equal((await sessions.deviceStatus(ticket)).colours, false);
   // After Apply the case's own camera record says which rows the card shows; the taps stand on it.
   assert.deepEqual(c.certify?.needed, ["screen", "body", "liquid"]);
   assert.deepEqual(c.certify && Object.values(c.certify.rows).map((r) => r?.label), ["OK", "Scuffs", "Clean"]);
   assert.equal(c.certify?.colours, "off");
   // A partner never sees the staff card; a case nobody tested with SwapUp Check gets none.
-  const desk = cases.createCase(adv, { customerName: "Desk Only" });
+  const desk = await cases.createCase(adv, { customerName: "Desk Only" });
   assert.equal(desk.certify, null);
 });
 
 test("the report: every store-camera photo by angle, the colour frames, what was checked by hand — and no vendor, no 402, no GradeIQ", async () => {
-  const r = gr.gradingReportFor(adv, caseId);
+  const r = await gr.gradingReportFor(adv, caseId);
   const token = r.path!.split("/").pop()!;
   const res = await publicRoute.GET(new Request(`http://x/api/r/${token}`), params({ token }));
   const env = (await res.json()) as { version: number; body: import("../domain/gradingReport.ts").ReportBody };
@@ -362,17 +362,17 @@ test("after the counter: no more certifying", async () => {
 });
 
 test("the advisor releases a phone from its Scan step by name; the phone reads `released`", async () => {
-  const created = sessions.createTestSession(adv, {});
+  const created = await sessions.createTestSession(adv, {});
   await until("the GradeIQ session", () => (db().prepare(`SELECT gradeiq_state FROM test_sessions WHERE id = ?`).get(created.session.id) as { gradeiq_state: string }).gradeiq_state === "ready");
   // Not joined yet: nothing to release.
   const early = await asUser(adv, () => releaseRoute.POST(new Request(`http://x/api/test-sessions/${created.session.id}/release-scan`, { method: "POST" }), params({ id: created.session.id })));
   assert.equal(early.status, 409);
-  const j = sessions.joinByCode(
+  const j = await sessions.joinByCode(
     { code: created.session.code, installId: "install-certify-0002", appVersion: "0.8.0", device: { brand: "samsung", manufacturer: "samsung", modelName: "SM-S918B", modelCode: "SM-S918B", osVersion: "14", isPhysicalDevice: true } },
     "127.0.0.1"
   );
   const t = `Ticket ${j.ticket}`;
-  sessions.devicePhase(t, { phase: "scan" });
+  await sessions.devicePhase(t, { phase: "scan" });
   const res = await asUser(adv, () => releaseRoute.POST(new Request(`http://x/api/test-sessions/${created.session.id}/release-scan`, { method: "POST" }), params({ id: created.session.id })));
   assert.equal(res.status, 200);
   const v = (await res.json()) as { grading: { released: { by: string } | null; canRelease: boolean } };
@@ -384,9 +384,9 @@ test("the advisor releases a phone from its Scan step by name; the phone reads `
 
 test("a stale echo can't satisfy the camera: the phone's 'off' is forwarded as it is", async () => {
   // The phone leaving its Scan step says "off" — never a colour GradeIQ could take for "white".
-  const created = sessions.createTestSession(adv, {});
+  const created = await sessions.createTestSession(adv, {});
   await until("the GradeIQ session", () => (db().prepare(`SELECT gradeiq_state FROM test_sessions WHERE id = ?`).get(created.session.id) as { gradeiq_state: string }).gradeiq_state === "ready");
-  const j = sessions.joinByCode({ code: created.session.code, installId: "install-certify-0003", appVersion: "0.8.0", device: { brand: "samsung", modelName: "SM-S918B", isPhysicalDevice: true } }, "127.0.0.1");
+  const j = await sessions.joinByCode({ code: created.session.code, installId: "install-certify-0003", appVersion: "0.8.0", device: { brand: "samsung", modelName: "SM-S918B", isPhysicalDevice: true } }, "127.0.0.1");
   await sessions.deviceScreenPost(`Ticket ${j.ticket}`, { shown: "white" });
   assert.equal((await sessions.getTestSession(adv, created.session.id)).session.grading?.deviceReady, true);
   await sessions.deviceScreenPost(`Ticket ${j.ticket}`, { shown: "off" });
@@ -399,11 +399,11 @@ test("a stale echo can't satisfy the camera: the phone's 'off' is forwarded as i
 });
 
 test("the camera service can't be read: a 0.8.0 phone still learns `released` (no 503, no skip for the customer), and the advisor's release reaches it", async () => {
-  const created = sessions.createTestSession(adv, {});
+  const created = await sessions.createTestSession(adv, {});
   await until("the GradeIQ session", () => (db().prepare(`SELECT gradeiq_state FROM test_sessions WHERE id = ?`).get(created.session.id) as { gradeiq_state: string }).gradeiq_state === "ready");
-  const j = sessions.joinByCode({ code: created.session.code, installId: "install-certify-0004", appVersion: "0.8.0", device: { brand: "samsung", modelName: "SM-S918B", isPhysicalDevice: true } }, "127.0.0.1");
+  const j = await sessions.joinByCode({ code: created.session.code, installId: "install-certify-0004", appVersion: "0.8.0", device: { brand: "samsung", modelName: "SM-S918B", isPhysicalDevice: true } }, "127.0.0.1");
   const t = `Ticket ${j.ticket}`;
-  sessions.devicePhase(t, { phase: "scan" });
+  await sessions.devicePhase(t, { phase: "scan" });
   let old = created;
   giq.screenDown = true;
   try {
@@ -419,9 +419,9 @@ test("the camera service can't be read: a 0.8.0 phone still learns `released` (n
     const go = await sessions.deviceScreenGet(t);
     assert.equal(go.released, true);
     // An older phone (no `released` in its contract) keeps the 503 it always had.
-    old = sessions.createTestSession(adv, {});
+    old = await sessions.createTestSession(adv, {});
     await until("the GradeIQ session", () => (db().prepare(`SELECT gradeiq_state FROM test_sessions WHERE id = ?`).get(old.session.id) as { gradeiq_state: string }).gradeiq_state === "ready");
-    const jo = sessions.joinByCode({ code: old.session.code, installId: "install-certify-0005", appVersion: "0.5.0", device: { brand: "samsung", modelName: "SM-S918B", isPhysicalDevice: true } }, "127.0.0.1");
+    const jo = await sessions.joinByCode({ code: old.session.code, installId: "install-certify-0005", appVersion: "0.5.0", device: { brand: "samsung", modelName: "SM-S918B", isPhysicalDevice: true } }, "127.0.0.1");
     await assert.rejects(sessions.deviceScreenGet(`Ticket ${jo.ticket}`), (e: Error & { status?: number }) => e.status === 503);
   } finally {
     giq.screenDown = false;
@@ -432,27 +432,27 @@ test("the camera service can't be read: a 0.8.0 phone still learns `released` (n
 });
 
 test("SUP-260: a Screen tap while the phone is still testing is taken at once — nothing waits for test colours, and the phone is never asked for them", async () => {
-  const created = sessions.createTestSession(adv, { customerName: "Early Tap" });
+  const created = await sessions.createTestSession(adv, { customerName: "Early Tap" });
   await until("the GradeIQ session", () => (db().prepare(`SELECT gradeiq_state FROM test_sessions WHERE id = ?`).get(created.session.id) as { gradeiq_state: string }).gradeiq_state === "ready");
-  const j = sessions.joinByCode(
+  const j = await sessions.joinByCode(
     { code: created.session.code, installId: "install-certify-0006", appVersion: "0.8.0", device: { brand: "samsung", modelName: "SM-S918B", modelCode: "SM-S918B", isPhysicalDevice: true } },
     "127.0.0.1"
   );
   const t = `Ticket ${j.ticket}`;
   const at = new Date().toISOString();
-  sessions.deviceResults(t, { results: [{ testId: "touch", outcome: "pass", at, detail: null }] });
-  sessions.devicePhase(t, { phase: "test" });
+  await sessions.deviceResults(t, { results: [{ testId: "touch", outcome: "pass", at, detail: null }] });
+  await sessions.devicePhase(t, { phase: "test" });
   const id = created.session.caseId;
   // Still testing: the Screen is taken like the body and the liquid indicator.
   const early = await act(adv, id, { action: "certify", row: "screen", value: "ok", testSessionId: created.session.id });
   assert.equal(early.status, 200, JSON.stringify(early.data).slice(0, 200));
   assert.equal((early.data.certification as Record<string, { withColours: boolean }>).screen.withColours, false);
   assert.equal((await act(adv, id, { action: "certify", row: "body", value: "like_new", testSessionId: created.session.id })).status, 200);
-  assert.equal(sessions.deviceStatus(t).colours, false);
+  assert.equal((await sessions.deviceStatus(t)).colours, false);
   // The tests finish: still no colours — the customer's phone shows its result, the advisor has the card.
-  sessions.deviceComplete(t);
-  sessions.devicePhase(t, { phase: "done" });
-  assert.equal(sessions.deviceStatus(t).colours, false);
+  await sessions.deviceComplete(t);
+  await sessions.devicePhase(t, { phase: "done" });
+  assert.equal((await sessions.deviceStatus(t)).colours, false);
   assert.equal((await sessions.getTestSession(adv, created.session.id)).session.certify?.colours, "off");
   // Let the join's forward to the stand-in finish before it closes.
   const forwarded = () => !!(db().prepare(`SELECT gradeiq_device_hash FROM test_sessions WHERE id = ?`).get(created.session.id) as { gradeiq_device_hash: string | null }).gradeiq_device_hash;
@@ -460,11 +460,11 @@ test("SUP-260: a Screen tap while the phone is still testing is taken at once �
 });
 
 test("an older SwapUp Store's 'Take photos anyway' (the camera override) also lets the phone go on from its Scan step", async () => {
-  const created = sessions.createTestSession(adv, {});
+  const created = await sessions.createTestSession(adv, {});
   await until("the GradeIQ session", () => (db().prepare(`SELECT gradeiq_state FROM test_sessions WHERE id = ?`).get(created.session.id) as { gradeiq_state: string }).gradeiq_state === "ready");
-  const j = sessions.joinByCode({ code: created.session.code, installId: "install-certify-0007", appVersion: "0.8.0", device: { brand: "samsung", modelName: "SM-S918B", isPhysicalDevice: true } }, "127.0.0.1");
+  const j = await sessions.joinByCode({ code: created.session.code, installId: "install-certify-0007", appVersion: "0.8.0", device: { brand: "samsung", modelName: "SM-S918B", isPhysicalDevice: true } }, "127.0.0.1");
   const t = `Ticket ${j.ticket}`;
-  sessions.devicePhase(t, { phase: "scan" });
+  await sessions.devicePhase(t, { phase: "scan" });
   assert.equal((await sessions.deviceScreenGet(t)).released, false);
   await sessions.cameraOverride(adv, created.session.id, { reason: "phone screen not echoing, photos anyway" });
   await wait(1100);

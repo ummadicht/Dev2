@@ -296,7 +296,7 @@ function phoneLabel(up: NonNullable<OfferInput["upgrade"]>): string {
  * words (ratecard.ts, priceiqTradeIn.ts), and a single-figure partner quote has no breakdown to show.
  */
 function tradeInDetail(q: OfferQuote): NonNullable<Offer["swap"]["tradeInDetail"]> {
-  const p = q.source.kind === "priceiq" ? (q.priceiq ?? null) : null;
+  const p = q.source?.kind === "priceiq" ? (q.priceiq ?? null) : null;
   const all = q.lines ?? [];
   const steps = p ? all.slice(1) : all.length > 1 ? all : [];
   return {
@@ -340,14 +340,14 @@ export function buildOffer(i: OfferInput): Offer {
   const r = i.repair;
   const repairAmount = r?.status === "quoted" ? r.customerPays : null;
   const covered = r?.status === "quoted" && r.customerPays === 0 && r.coverage !== "none" && r.basis === "book";
-  const repairNote = r?.notes[0] ?? i.repairNotServiced;
+  const repairNote = r?.notes?.[0] ?? i.repairNotServiced;
   let detail: string | null = null;
   if (r && repairAmount !== null) {
     if (covered) detail = r.coverage === "warranty" ? "Covered by warranty" : "Covered by Care+";
-    else if (r.basis === "manual") detail = `Quote: ${(i.manualRepair?.reason ?? r.notes[0] ?? "").trim()}`;
+    else if (r.basis === "manual") detail = `Quote: ${(i.manualRepair?.reason ?? r.notes?.[0] ?? "").trim()}`;
     else {
       const parts = [
-        ...r.lines.map((l) => l.label),
+        ...(r.lines ?? []).map((l) => l.label),
         ...(r.labour > 0 ? ["labour"] : []),
         ...(r.gst > 0 ? ["GST"] : []),
         ...(r.carePlusFee > 0 ? ["Care+ fee"] : []),
@@ -372,7 +372,7 @@ export function buildOffer(i: OfferInput): Offer {
     // A closed case is never re-quoted: its quote running out after the lock is no news.
     if (i.quoteExpired && open) tradeInNote = EXPIRED_NOTE;
     // Old market data (over 14 days) is shown with its age; a last good answer says PriceIQ didn't answer.
-    else if (q.source.kind === "priceiq" && q.priceiq?.note) tradeInNote = q.priceiq.note;
+    else if (q.source?.kind === "priceiq" && q.priceiq?.note) tradeInNote = q.priceiq.note;
   }
   // The phone measured a size that isn't on the model's list: say so, never a chip for another size.
   const measured = i.measuredStorage ?? null;
@@ -471,7 +471,7 @@ export function buildOffer(i: OfferInput): Offer {
     signals[0]?.text ??
     (recommendation === "no_repair" ? (i.tested === false ? NOTHING_RECORDED : NOTHING_WRONG) : null) ??
     // "Not enough to compare yet" says what is missing (e.g. no repaired value yet).
-    (recommendation === "cannot_say" ? (decision?.missing[0] ?? null) : null);
+    (recommendation === "cannot_say" ? (decision?.missing?.[0] ?? null) : null);
 
   const status = i.status;
   return {
@@ -528,7 +528,7 @@ export function buildOffer(i: OfferInput): Offer {
       walkAway: !open ? CLOSED : null,
     },
     signals,
-    safety: decision?.caveats.includes(SWOLLEN_BATTERY_CAVEAT) ? SWOLLEN_BATTERY_CAVEAT : null,
+    safety: decision?.caveats?.includes(SWOLLEN_BATTERY_CAVEAT) ? SWOLLEN_BATTERY_CAVEAT : null,
     caveats: (decision?.caveats ?? []).filter((c) => c !== SWOLLEN_BATTERY_CAVEAT),
     answer: buildAnswer({
       status,
@@ -538,16 +538,16 @@ export function buildOffer(i: OfferInput): Offer {
           ? null
           : {
               amount: market,
-              source: q?.source.kind ?? "none",
+              source: q?.source?.kind ?? "none",
               // A rate card prices at a grade column, or — a row with only its top price — at grade A: the
               // row's max price IS grade A's (ratecard.ts RateEntry), less every condition % including the
               // looks. So a grade-A phone on such a row names grade A and works the price out; a grade B–D
               // phone names no grade, and staff read "Priced at grade A … — none listed at grade B".
               priceGrade:
-                q?.source.kind === "priceiq" ? (q.priceiq?.grade ?? null) : q?.source.kind === "partner_ratecard" ? (q.grade ?? "Superb") : (q?.grade ?? null),
+                q?.source?.kind === "priceiq" ? (q.priceiq?.grade ?? null) : q?.source?.kind === "partner_ratecard" ? (q.grade ?? "Superb") : (q?.grade ?? null),
               // The grade's own price before deductions — the trace's first line is that base
               // ("Market price grade A · <card>" / "Best-condition price on the rate card", ratecard.ts priceFromCard).
-              gradePrice: q?.source.kind === "partner_ratecard" && typeof q?.lines?.[0]?.amount === "number" ? q.lines[0].amount : null,
+              gradePrice: q?.source?.kind === "partner_ratecard" && typeof q?.lines?.[0]?.amount === "number" ? q.lines[0].amount : null,
               // What the price took off, in the customer's words (ratecard.ts: each deduction line's `word`).
               takenOff: (q?.lines ?? []).flatMap((l) => (l.word && l.amount < 0 ? [l.word] : [])),
             },

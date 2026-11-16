@@ -20,7 +20,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const T = mkdtempSync(join(tmpdir(), "swapup-release-"));
@@ -87,7 +87,7 @@ mkdirSync(DOWNLOADS);
 symlinkSync(join(ROOT, "node_modules"), join(VM, "swapup", "node_modules"));
 const LIVE_DB = join(VM, "swapup", "data", "swapup.db");
 {
-  const d = new Database(LIVE_DB);
+  const d = new DatabaseSync(LIVE_DB);
   d.exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
     INSERT INTO meta VALUES ('schema_version', '17');
     CREATE TABLE rate_cards (id TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0);
@@ -96,7 +96,7 @@ const LIVE_DB = join(VM, "swapup", "data", "swapup.db");
   d.close();
 }
 const live = (sql: string, ...p: unknown[]) => {
-  const d = new Database(LIVE_DB);
+  const d = new DatabaseSync(LIVE_DB);
   d.prepare(sql).run(...p);
   d.close();
 };
@@ -208,7 +208,7 @@ test("with an active rate card: a timestamped backup of the live database, then 
     assert.match(file, /^swapup-pre-9\.9\.9-\d{8}T\d{6}Z\.db$/);
     const path = join(VM, "swapup-backups", file);
     assert.equal(statSync(path).mode & 0o777, 0o600);
-    const copy = new Database(path, { readonly: true });
+    const copy = new DatabaseSync(path, { readOnly: true });
     assert.equal((copy.prepare(`SELECT COUNT(*) n FROM rate_cards WHERE active = 1`).get() as { n: number }).n, 1);
     copy.close();
     // deploy.sh was told the backup is taken (so it takes no second one), and ran after it.

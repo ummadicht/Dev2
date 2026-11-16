@@ -373,7 +373,7 @@ CREATE TABLE IF NOT EXISTS grading_reports (
 CREATE TABLE IF NOT EXISTS phonecheck_records (
   id TEXT PRIMARY KEY,
   record_key TEXT NOT NULL UNIQUE,
-  source TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('pull', 'webhook', 'upload')),
   imei TEXT,
   imei2 TEXT,
   store_id TEXT,
@@ -484,10 +484,209 @@ export function db(): SqliteCompatDb {
   return g.__swapup_sqlite_db;
 }
 
+function pgSchemaName(): string {
+  const raw = process.env.PGSCHEMA || "swapup";
+  return raw.replace(/[^a-zA-Z0-9_]/g, "") || "swapup";
+}
+
+const PG_MIGRATIONS = `
+DO $$
+BEGIN
+  -- orgs
+  ALTER TABLE IF EXISTS orgs ADD COLUMN IF NOT EXISTS client_type TEXT;
+  ALTER TABLE IF EXISTS orgs ADD COLUMN IF NOT EXISTS target_brand TEXT;
+  ALTER TABLE IF EXISTS orgs ADD COLUMN IF NOT EXISTS partner_id TEXT;
+  ALTER TABLE IF EXISTS orgs ADD COLUMN IF NOT EXISTS settings TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE IF EXISTS orgs ADD COLUMN IF NOT EXISTS demo INTEGER NOT NULL DEFAULT 0;
+
+  -- stores
+  ALTER TABLE IF EXISTS stores ADD COLUMN IF NOT EXISTS credit_limit INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE IF EXISTS stores ADD COLUMN IF NOT EXISTS active INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE IF EXISTS stores ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+  ALTER TABLE IF EXISTS stores ADD COLUMN IF NOT EXISTS review_note TEXT;
+  ALTER TABLE IF EXISTS stores ADD COLUMN IF NOT EXISTS settings TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE IF EXISTS stores ADD COLUMN IF NOT EXISTS registered_by TEXT;
+  ALTER TABLE IF EXISTS stores ADD COLUMN IF NOT EXISTS counter_code TEXT;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'stores' AND column_name = 'city' AND is_nullable = 'NO') THEN
+    ALTER TABLE stores ALTER COLUMN city DROP NOT NULL;
+  END IF;
+
+  -- users
+  ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS store_id TEXT;
+  ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS active INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS pin_hash TEXT;
+  ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS pin_set_at TEXT;
+
+  -- trade_models / new_devices / repair_book
+  ALTER TABLE IF EXISTS trade_models ADD COLUMN IF NOT EXISTS model_codes TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE IF EXISTS trade_models ADD COLUMN IF NOT EXISTS source TEXT;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'trade_models' AND column_name = 'release_year' AND is_nullable = 'NO') THEN
+    ALTER TABLE trade_models ALTER COLUMN release_year DROP NOT NULL;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'trade_models' AND column_name = 'source' AND is_nullable = 'NO') THEN
+    ALTER TABLE trade_models ALTER COLUMN source DROP NOT NULL;
+  END IF;
+  ALTER TABLE IF EXISTS new_devices ADD COLUMN IF NOT EXISTS source TEXT;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'new_devices' AND column_name = 'source' AND is_nullable = 'NO') THEN
+    ALTER TABLE new_devices ALTER COLUMN source DROP NOT NULL;
+  END IF;
+  ALTER TABLE IF EXISTS repair_book ADD COLUMN IF NOT EXISTS source TEXT;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'repair_book' AND column_name = 'source' AND is_nullable = 'NO') THEN
+    ALTER TABLE repair_book ALTER COLUMN source DROP NOT NULL;
+  END IF;
+
+  -- cases
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'cases' AND column_name = 'customer' AND is_nullable = 'NO') THEN
+    ALTER TABLE cases ALTER COLUMN customer DROP NOT NULL;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'cases' AND column_name = 'device' AND is_nullable = 'NO') THEN
+    ALTER TABLE cases ALTER COLUMN device DROP NOT NULL;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'cases' AND column_name = 'advisor_id' AND is_nullable = 'NO') THEN
+    ALTER TABLE cases ALTER COLUMN advisor_id DROP NOT NULL;
+  END IF;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS model_id TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS variant TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS imei TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS imei_check TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS imei2 TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS imei2_check TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS closed_reason TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS faults TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS coverage TEXT NOT NULL DEFAULT 'none';
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS condition TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS manual_repair TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS partner_manual TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS repair TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS quote TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS repaired_quote TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS upgrade TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS bonus TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS decision TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS checks TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS trade_value INTEGER;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS bonus_value INTEGER;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS payable INTEGER;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS premium_value INTEGER;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS premium_bp INTEGER;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS premium_funded_by TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS pickup_id TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS clearance TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS settled_at TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS demo INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS locked_at TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS closed_at TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS fault_sources TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS camera_check TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS data_clear TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS refurb_cost TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS variant_source TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS storage_quotes TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS measured_storage TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS certification TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS report_token TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS imei_lookup TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS kym_early TEXT;
+  ALTER TABLE IF EXISTS cases ADD COLUMN IF NOT EXISTS model_source TEXT;
+  -- Backfill model_id/variant/imei if legacy cases row stored them inside device JSON
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'cases' AND column_name = 'device') THEN
+    UPDATE cases
+    SET model_id = COALESCE(model_id, (device::jsonb)->>'modelId'),
+        variant = COALESCE(variant, (device::jsonb)->>'variant'),
+        imei = COALESCE(imei, (device::jsonb)->>'imei')
+    WHERE device IS NOT NULL AND device LIKE '{%' AND (model_id IS NULL OR variant IS NULL OR imei IS NULL);
+  END IF;
+
+  -- credit_ledger (deploy/schema-and-validation-data.sql used text id & created_at instead of serial id & at)
+  ALTER TABLE IF EXISTS credit_ledger ADD COLUMN IF NOT EXISTS at TEXT;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'credit_ledger' AND column_name = 'created_at') THEN
+    UPDATE credit_ledger SET at = COALESCE(at, created_at, now()::text) WHERE at IS NULL;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'credit_ledger' AND column_name = 'created_at' AND is_nullable = 'NO') THEN
+      ALTER TABLE credit_ledger ALTER COLUMN created_at DROP NOT NULL;
+    END IF;
+  ELSE
+    UPDATE credit_ledger SET at = COALESCE(at, now()::text) WHERE at IS NULL;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'credit_ledger' AND column_name = 'id' AND data_type = 'text' AND column_default IS NULL) THEN
+    CREATE SEQUENCE IF NOT EXISTS credit_ledger_id_seq;
+    ALTER TABLE credit_ledger ALTER COLUMN id SET DEFAULT ('cl_' || lpad(nextval('credit_ledger_id_seq')::text, 12, '0'));
+  END IF;
+
+  -- pickups (deploy/schema-and-validation-data.sql used created_at/updated_at instead of requested_at)
+  ALTER TABLE IF EXISTS pickups ADD COLUMN IF NOT EXISTS requested_at TEXT;
+  ALTER TABLE IF EXISTS pickups ADD COLUMN IF NOT EXISTS handover_by TEXT;
+  ALTER TABLE IF EXISTS pickups ADD COLUMN IF NOT EXISTS reconciled_at TEXT;
+  ALTER TABLE IF EXISTS pickups ADD COLUMN IF NOT EXISTS collected_at TEXT;
+  ALTER TABLE IF EXISTS pickups ADD COLUMN IF NOT EXISTS settled_at TEXT;
+  ALTER TABLE IF EXISTS pickups ADD COLUMN IF NOT EXISTS settlement_ref TEXT;
+  ALTER TABLE IF EXISTS pickups ADD COLUMN IF NOT EXISTS settlement_amount INTEGER;
+  ALTER TABLE IF EXISTS pickups ADD COLUMN IF NOT EXISTS notes TEXT;
+  ALTER TABLE IF EXISTS pickups ADD COLUMN IF NOT EXISTS demo INTEGER NOT NULL DEFAULT 0;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'pickups' AND column_name = 'created_at') THEN
+    UPDATE pickups SET requested_at = COALESCE(requested_at, created_at, now()::text) WHERE requested_at IS NULL;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'pickups' AND column_name = 'created_at' AND is_nullable = 'NO') THEN
+      ALTER TABLE pickups ALTER COLUMN created_at DROP NOT NULL;
+    END IF;
+  ELSE
+    UPDATE pickups SET requested_at = COALESCE(requested_at, now()::text) WHERE requested_at IS NULL;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'pickups' AND column_name = 'updated_at' AND is_nullable = 'NO') THEN
+    ALTER TABLE pickups ALTER COLUMN updated_at DROP NOT NULL;
+  END IF;
+
+  -- audit (deploy/schema-and-validation-data.sql used text id with no default)
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'audit' AND column_name = 'id' AND data_type = 'text' AND column_default IS NULL) THEN
+    CREATE SEQUENCE IF NOT EXISTS audit_id_seq;
+    ALTER TABLE audit ALTER COLUMN id SET DEFAULT ('aud_' || lpad(nextval('audit_id_seq')::text, 12, '0'));
+  END IF;
+
+  -- test_sessions
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS gradeiq_id TEXT;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS gradeiq_state TEXT NOT NULL DEFAULT 'disabled';
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS gradeiq_error TEXT;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS gradeiq_snapshot TEXT;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS gradeiq_synced_at TEXT;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS gradeiq_forwarded_at TEXT;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS gradeiq_attempts INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS gradeiq_orphans TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS gradeiq_screen TEXT;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS gradeiq_screen_at TEXT;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS gradeiq_cosmetic_done_at TEXT;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS gradeiq_device_hash TEXT;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS gradeiq_forward_hash TEXT;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS gradeiq_sync_error TEXT;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS gradeiq_override TEXT;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS gradeiq_devicefax TEXT;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS phone_phase TEXT;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS phone_phase_at TEXT;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS started_via TEXT;
+  ALTER TABLE IF EXISTS test_sessions ADD COLUMN IF NOT EXISTS scan_release TEXT;
+
+  -- phonecheck_records
+  ALTER TABLE IF EXISTS phonecheck_records ADD COLUMN IF NOT EXISTS attach_override TEXT;
+
+  -- razorpay_payments
+  ALTER TABLE IF EXISTS razorpay_payments ADD COLUMN IF NOT EXISTS remaining_due INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE IF EXISTS razorpay_payments ADD COLUMN IF NOT EXISTS emi_months INTEGER;
+  ALTER TABLE IF EXISTS razorpay_payments ADD COLUMN IF NOT EXISTS emi_monthly_amount INTEGER;
+  ALTER TABLE IF EXISTS razorpay_payments ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'INR';
+  ALTER TABLE IF EXISTS razorpay_payments ADD COLUMN IF NOT EXISTS razorpay_payment_id TEXT;
+  ALTER TABLE IF EXISTS razorpay_payments ADD COLUMN IF NOT EXISTS razorpay_signature TEXT;
+  ALTER TABLE IF EXISTS razorpay_payments ADD COLUMN IF NOT EXISTS payment_method TEXT;
+  ALTER TABLE IF EXISTS razorpay_payments ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'created';
+  ALTER TABLE IF EXISTS razorpay_payments ADD COLUMN IF NOT EXISTS customer_name TEXT;
+  ALTER TABLE IF EXISTS razorpay_payments ADD COLUMN IF NOT EXISTS customer_phone TEXT;
+  ALTER TABLE IF EXISTS razorpay_payments ADD COLUMN IF NOT EXISTS notes TEXT;
+  ALTER TABLE IF EXISTS razorpay_payments ADD COLUMN IF NOT EXISTS created_by TEXT;
+  ALTER TABLE IF EXISTS razorpay_payments ADD COLUMN IF NOT EXISTS paid_at TEXT;
+END
+$$;
+`;
+
 export function getPool(): Pool {
   if (!g.__swapup_pg_pool) {
     const connectionString = process.env.DATABASE_URL;
-    const schema = process.env.PGSCHEMA || "swapup";
+    const schema = pgSchemaName();
 
     if (connectionString) {
       g.__swapup_pg_pool = new Pool({
@@ -505,6 +704,10 @@ export function getPool(): Pool {
       });
     }
 
+    g.__swapup_pg_pool.on("connect", (client) => {
+      client.query(`SET search_path TO "${schema}", public`).catch(() => {});
+    });
+
     g.__swapup_pg_pool.on("error", (err) => {
       console.error("[SwapUp PostgreSQL Pool Error]", err);
     });
@@ -516,12 +719,21 @@ function ensurePgSchema(): Promise<void> {
   if (!g.__swapup_pg_init) {
     g.__swapup_pg_init = (async () => {
       const pool = getPool();
-      const rawSchema = process.env.PGSCHEMA || "swapup";
-      const safeSchema = rawSchema.replace(/[^a-zA-Z0-9_]/g, "") || "swapup";
+      const safeSchema = pgSchemaName();
       const pgDdl = SQLITE_SCHEMA.replace(/INTEGER PRIMARY KEY AUTOINCREMENT/gi, "SERIAL PRIMARY KEY");
-      await pool.query(`CREATE SCHEMA IF NOT EXISTS "${safeSchema}"`);
-      await pool.query(pgDdl);
-    })();
+      const client = await pool.connect();
+      try {
+        await client.query(`CREATE SCHEMA IF NOT EXISTS "${safeSchema}"`);
+        await client.query(`SET search_path TO "${safeSchema}", public`);
+        await client.query(pgDdl);
+        await client.query(PG_MIGRATIONS);
+      } finally {
+        client.release();
+      }
+    })().catch((err) => {
+      g.__swapup_pg_init = undefined;
+      throw err;
+    });
   }
   return g.__swapup_pg_init;
 }

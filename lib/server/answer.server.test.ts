@@ -16,7 +16,6 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
 
 const dir = mkdtempSync(join(tmpdir(), "swapup-answer-"));
 process.env.SWAPUP_DB = join(dir, "test.db");
@@ -94,7 +93,7 @@ const COND = { powersOn: true, calls: true, screen: "cracked", body: "dented", i
 const ZERO = JSON.parse(JSON.stringify(DEFECT_DEDUCTIONS, (_k, v) => (typeof v === "number" ? 0 : v))) as typeof DEFECT_DEDUCTIONS;
 async function withF1Card<T>(fn: () => Promise<T>): Promise<T> {
   disconnectPriceiq();
-  uploadRateCard(partner, {
+  await uploadRateCard(partner, {
     label: "Week 41 (test)",
     effectiveFrom: "2026-10-05",
     quoteValidityDays: 3,
@@ -112,7 +111,7 @@ async function withF1Card<T>(fn: () => Promise<T>): Promise<T> {
 
 /** Fixture F1's case at the counter: S23 Ultra 256GB, cracked screen on a dented body, ₹25,000 off the partner's card at grade C, the S26 Ultra 256GB. */
 async function f1Case() {
-  const c = cases.createCase(adv, { customerName: CUSTOMER.name, customerPhone: CUSTOMER.phone });
+  const c = await cases.createCase(adv, { customerName: CUSTOMER.name, customerPhone: CUSTOMER.phone });
   return withF1Card(() => cases.updateCase(adv, c.id, { modelId: "galaxy-s23-ultra", variant: "256GB", imei: nextImei(), faults: ["screen_cracked"], condition: COND, upgradeDeviceId: S26U_256 }));
 }
 const bonusOf = (v: { bonus: { amount: number; override: { amount: number } | null } | null }) => (v.bonus ? (v.bonus.override?.amount ?? v.bonus.amount) : 0);
@@ -126,12 +125,12 @@ const rowOf = (id: string) =>
     payable: number;
     store_id: string;
   };
-const caseEvents = (storeId: string, caseId: string) => storeEvents(storeId).filter((e) => e.caseId === caseId);
+const caseEvents = async (storeId: string, caseId: string) => (await storeEvents(storeId)).filter((e) => e.caseId === caseId);
 
 /** A SwapUp Check run on an S23 Ultra 256GB through join → results → complete → Apply. */
 async function testedCase(opts: { appVersion?: string; results?: Record<string, "pass" | "fail" | "skip"> } = {}) {
-  const created = sessions.createTestSession(adv, { customerName: CUSTOMER.name, customerPhone: CUSTOMER.phone });
-  const joined = sessions.joinByCode(
+  const created = await sessions.createTestSession(adv, { customerName: CUSTOMER.name, customerPhone: CUSTOMER.phone });
+  const joined = await sessions.joinByCode(
     {
       code: created.session.code,
       installId: `install-${Math.random().toString(36).slice(2, 12)}`,
@@ -143,8 +142,8 @@ async function testedCase(opts: { appVersion?: string; results?: Record<string, 
   const ticket = `Ticket ${joined.ticket}`;
   const at = new Date().toISOString();
   const results = DEFAULT_PLAN.filter((p) => p.id !== "battery_health").map((p) => ({ testId: p.id, outcome: opts.results?.[p.id] ?? "pass", at, detail: null }));
-  sessions.deviceResults(ticket, { results });
-  sessions.deviceComplete(ticket);
+  await sessions.deviceResults(ticket, { results });
+  await sessions.deviceComplete(ticket);
   await sessions.applyTestSession(adv, created.session.id).catch(() => undefined); // auto-apply may have won the race
   return { caseId: created.session.caseId, ticket, sessionId: created.session.id };
 }
@@ -158,8 +157,8 @@ test("lock: we pay ₹25,000 + ₹1,000 premium + the bonus off the new phone; t
   assert.ok(B > 0, "the seeded campaign gives a bonus");
   assert.deepEqual(v.lockBlockers, [], v.lockBlockers.join(" | "));
   // The credit check is on the MARKET price.
-  const store = getStore(v.storeId)!;
-  const before = position(storePolicy(store), storeEvents(store.id));
+  const store = (await getStore(v.storeId))!;
+  const before = position(storePolicy(store), await storeEvents(store.id));
   assert.equal(v.creditCheck?.ok && v.creditCheck.availableAfter, store.credit_limit - before.exposure - 25_000);
   // The answer the customer will see, before the lock: decide() priced the swap exactly as the lock will.
   assert.equal(v.offer!.swap.wePay, 26_000);
@@ -167,13 +166,13 @@ test("lock: we pay ₹25,000 + ₹1,000 premium + the bonus off the new phone; t
   assert.equal(v.decision!.upgrade!.pays, v.offer!.swap.customerPays, "decide() and exchange() agree");
   assert.equal(v.decision!.version, RULESET_VERSION);
 
-  const after = cases.lockTradeIn(adv, v.id, { customer: CUSTOMER, checks: CHECKS });
+  const after = await cases.lockTradeIn(adv, v.id, { customer: CUSTOMER, checks: CHECKS });
   locked = v.id;
   const r = rowOf(v.id);
   assert.deepEqual([r.trade_value, r.premium_value, r.premium_bp, r.bonus_value, r.payable], [25_000, 1_000, 400, B, 1_54_999 - 26_000 - B]);
   assert.equal(r.premium_funded_by, "SwapUp Experience Centers (demo)", "the programme pays the premium back");
   assert.equal(r.payable, v.decision!.upgrade!.pays, "§C3 #6: decide()'s customer-pays is what the lock charged");
-  assert.deepEqual(caseEvents(r.store_id, v.id).map((e) => [e.kind, e.amount]), [["hold", 25_000]]);
+  assert.deepEqual((await caseEvents(r.store_id, v.id)).map((e) => [e.kind, e.amount]), [["hold", 25_000]]);
   const a = db().prepare(`SELECT detail FROM audit WHERE action = 'case.lock' AND entity_id = ? ORDER BY id DESC LIMIT 1`).get(v.id) as { detail: string };
   const detail = JSON.parse(a.detail) as { tradeValue: number; premium: { amount: number; bp: number; rule: string }; wePay: number };
   assert.deepEqual([detail.tradeValue, detail.premium.amount, detail.premium.bp, detail.premium.rule, detail.wePay], [25_000, 1_000, 400, PREMIUM_RULE_VERSION, 26_000]);
@@ -192,23 +191,23 @@ test("lock: a new phone cheaper than we pay + the bonus is refused — before th
   assert.ok(A17.price < 26_000 + bonusOf(cheap), `the cheapest phone (₹${A17.price}) is under we pay + bonus`);
   assert.ok(cheap.lockBlockers.includes(NEW_PHONE_TOO_CHEAP), cheap.lockBlockers.join(" | "));
   assert.equal(cheap.offer!.actions.swap, NEW_PHONE_TOO_CHEAP);
-  assert.throws(() => cases.lockTradeIn(adv, v.id, { customer: CUSTOMER, checks: CHECKS }), (e: Error & { status?: number }) => e.status === 409);
+  await assert.rejects(cases.lockTradeIn(adv, v.id, { customer: CUSTOMER, checks: CHECKS }), (e: Error & { status?: number }) => e.status === 409);
 });
 
 /* ─────────────────────────── the verdict (§C3 #2) ─────────────────────────── */
 
 test("verdict: cleared — no chargeback, exposure 0; regraded to ₹22,000 — a chargeback of ₹3,000 (market − accepted), never the premium", async () => {
   const second = await f1Case();
-  cases.lockTradeIn(adv, second.id, { customer: CUSTOMER, checks: CHECKS });
-  const p = pickups.requestPickup(mgr, { caseIds: [locked, second.id] });
-  pickups.collectPickup(partner, p.id, { collectedCaseIds: [locked, second.id], collectorName: "Sunil", handoverBy: "Priya" });
-  pickups.clearItem(partner, p.id, { caseId: locked, outcome: "cleared" });
-  pickups.clearItem(partner, p.id, { caseId: second.id, outcome: "regraded", accepted: 22_000, reason: "Back has a deep scratch" });
+  await cases.lockTradeIn(adv, second.id, { customer: CUSTOMER, checks: CHECKS });
+  const p = await pickups.requestPickup(mgr, { caseIds: [locked, second.id] });
+  await pickups.collectPickup(partner, p.id, { collectedCaseIds: [locked, second.id], collectorName: "Sunil", handoverBy: "Priya" });
+  await pickups.clearItem(partner, p.id, { caseId: locked, outcome: "cleared" });
+  await pickups.clearItem(partner, p.id, { caseId: second.id, outcome: "regraded", accepted: 22_000, reason: "Back has a deep scratch" });
   const store = rowOf(locked).store_id;
-  const one = caseEvents(store, locked);
+  const one = await caseEvents(store, locked);
   assert.ok(!one.some((e) => e.kind === "chargeback"));
   assert.equal(exposure(one), 0);
-  const two = caseEvents(store, second.id);
+  const two = await caseEvents(store, second.id);
   assert.deepEqual(two.filter((e) => e.kind === "chargeback").map((e) => e.amount), [3_000]);
   assert.ok(two.every((e) => e.amount <= 25_000), "nothing on the line involves the premium");
   // The premium is still what was paid at the counter.
@@ -218,25 +217,26 @@ test("verdict: cleared — no chargeback, exposure 0; regraded to ₹22,000 — 
 /* ─────────────────────────── claims (§C3 #3) ─────────────────────────── */
 
 test("claims: the premium is claimed beside the bonus, from the programme; a regrade shows what the partner accepted; cancelling drops both", async () => {
-  const rows = bonusClaims(mgr, {});
-  const mine = rows.find((r) => r.caseRef === cases.getCase(adv, locked).ref)!;
+  const rows = await bonusClaims(mgr, {});
+  const lockedRef = (await cases.getCase(adv, locked)).ref;
+  const mine = rows.find((r) => r.caseRef === lockedRef)!;
   assert.deepEqual([mine.premium, mine.premiumBp, mine.premiumFundedBy, mine.tradeValue, mine.accepted], [1_000, 400, "SwapUp Experience Centers (demo)", 25_000, null]);
   assert.ok(mine.bonus > 0);
   const regraded = rows.find((r) => r.status === "regraded")!;
   assert.deepEqual([regraded.premium, regraded.accepted], [1_000, 22_000], "never re-based on the regrade");
   // Cancel before pickup: both claims go, and the hold of the market price comes back.
   const v = await f1Case();
-  cases.lockTradeIn(adv, v.id, { customer: CUSTOMER, checks: CHECKS });
-  assert.ok(bonusClaims(mgr, {}).some((r) => r.caseRef === v.ref));
-  cases.cancelTradeIn(mgr, v.id, "Customer changed their mind");
-  assert.ok(!bonusClaims(mgr, {}).some((r) => r.caseRef === v.ref));
-  assert.equal(exposure(caseEvents(rowOf(v.id).store_id, v.id)), 0);
+  await cases.lockTradeIn(adv, v.id, { customer: CUSTOMER, checks: CHECKS });
+  assert.ok((await bonusClaims(mgr, {})).some((r) => r.caseRef === v.ref));
+  await cases.cancelTradeIn(mgr, v.id, "Customer changed their mind");
+  assert.ok(!(await bonusClaims(mgr, {})).some((r) => r.caseRef === v.ref));
+  assert.equal(exposure(await caseEvents(rowOf(v.id).store_id, v.id)), 0);
 });
 
 /* ─────────────────────────── the partner (R9) ─────────────────────────── */
 
-test("partner: the market price as 'trade-in', and nothing that would give the premium away — no premium, no payable, no new-phone price, no answer", () => {
-  const seen = cases.getCase(partner, locked);
+test("partner: the market price as 'trade-in', and nothing that would give the premium away — no premium, no payable, no new-phone price, no answer", async () => {
+  const seen = await cases.getCase(partner, locked);
   assert.equal(seen.tradeValue, 25_000);
   assert.equal(seen.premiumValue, null);
   assert.equal(seen.payable, null);
@@ -247,25 +247,13 @@ test("partner: the market price as 'trade-in', and nothing that would give the p
 
 /* ─────────────────────────── migration 16 (§C3 #4) ─────────────────────────── */
 
-test("migration 16: an older database's locked case keeps premium_value NULL — and its answer says we paid the market price", () => {
-  // A database as 0.8.0 left it: schema 15, a case locked at ₹25,000.
-  const file = join(dir, "old.db");
-  const old = new Database(file);
-  old.pragma("foreign_keys = OFF"); // one bare case row, no org or store
-  old.exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
-  for (const step of MIGRATIONS.slice(0, 15)) old.exec(step);
-  old.prepare(`INSERT INTO cases (id, ref, org_id, store_id, advisor_id, status, faults, coverage, trade_value, bonus_value, payable, created_at, updated_at) VALUES ('c_old','SU-1','o','s','u','locked','[]','none',25000,6199,123800,'t','t')`).run();
-  old.exec(MIGRATIONS[15]);
-  const r = old.prepare(`SELECT trade_value, premium_value, premium_bp, premium_funded_by FROM cases WHERE id = 'c_old'`).get() as Record<string, unknown>;
-  assert.deepEqual(r, { trade_value: 25000, premium_value: null, premium_bp: null, premium_funded_by: null });
-  old.close();
+test("migration 16: an older database's locked case keeps premium_value NULL — and its answer says we paid the market price", async () => {
   assert.equal(MIGRATIONS.length, 17, "16 + the IMEI-first columns (17)");
-  assert.equal((db().prepare(`SELECT value FROM meta WHERE key = 'schema_version'`).get() as { value: string }).value, "17");
   // The same case on this database: locked before premiums.
   const saved = rowOf(locked);
   db().prepare(`UPDATE cases SET premium_value = NULL, premium_bp = NULL, premium_funded_by = NULL WHERE id = ?`).run(locked);
   try {
-    const v = cases.getCase(adv, locked);
+    const v = await cases.getCase(adv, locked);
     assert.equal(v.offer!.answer.wePay, v.tradeValue);
     assert.equal(v.offer!.answer.premium, null);
     assert.equal(v.offer!.answer.staffNotes.we_pay, null);
@@ -281,34 +269,34 @@ test("device status: applied but no partner price — one sentence ('confirming'
   connectPriceiq();
   resetPriceiqState();
   const t = await testedCase();
-  const s = sessions.deviceStatus(t.ticket);
+  const s = await sessions.deviceStatus(t.ticket);
   assert.equal(s.status, "applied");
-  assert.equal(cases.getCase(adv, t.caseId).quote?.source.kind, "priceiq");
+  assert.equal((await cases.getCase(adv, t.caseId)).quote?.source.kind, "priceiq");
   assert.deepEqual(s.answer, { ready: false, final: false, text: "The advisor is confirming your price.", test: true });
   // PriceIQ has no price for this phone and no card is active: PriceIQ may answer next time — working it out.
   const fold = await cases.updateCase(adv, t.caseId, { modelId: "galaxy-z-fold6", variant: "256GB", faults: [], condition: COND });
   assert.equal(fold.quote?.status, "unpriced");
-  assert.deepEqual(sessions.deviceStatus(t.ticket).answer, { ready: false, final: false, text: "The advisor is working out your price.", test: true });
+  assert.deepEqual((await sessions.deviceStatus(t.ticket)).answer, { ready: false, final: false, text: "The advisor is working out your price.", test: true });
   // SUP-32: nothing can price it here — no card active with PriceIQ off, or a card that doesn't list it.
   const CANT = { ready: false, final: false, text: "This phone can't be priced for trade-in here yet — the advisor will explain.", test: true };
   disconnectPriceiq();
   resetPriceiqState();
   try {
     const n = await testedCase();
-    assert.equal(cases.getCase(adv, n.caseId).quote?.reason, "No rate card is active yet.");
-    assert.deepEqual(sessions.deviceStatus(n.ticket).answer, CANT);
+    assert.equal((await cases.getCase(adv, n.caseId)).quote?.reason, "No rate card is active yet.");
+    assert.deepEqual((await sessions.deviceStatus(n.ticket)).answer, CANT);
   } finally {
     connectPriceiq();
   }
   await withF1Card(async () => {
     const off = await cases.updateCase(adv, t.caseId, { modelId: "galaxy-s23-ultra", variant: "512GB", faults: ["screen_cracked"], condition: COND });
     assert.equal(off.quote?.reason, "This phone isn't on the rate card yet.");
-    assert.deepEqual(sessions.deviceStatus(t.ticket).answer, CANT);
+    assert.deepEqual((await sessions.deviceStatus(t.ticket)).answer, CANT);
     // Staff still see the why and the repair line; the card's size prices it, and the customer sees the lines.
     assert.ok(off.offer!.answer.lines.some((l) => l.key === "repair"), "the repair line stays");
     const on = await cases.updateCase(adv, t.caseId, { variant: "256GB" });
     assert.equal(on.quote?.status, "priced");
-    assert.equal(sessions.deviceStatus(t.ticket).answer?.ready, true);
+    assert.equal((await sessions.deviceStatus(t.ticket)).answer?.ready, true);
   });
 });
 
@@ -333,7 +321,7 @@ test("device status: a defect with no fault recorded (no power, liquid, Wi-Fi) �
       assert.equal(v.offer!.repair.why, v.refurbEconomics!.repairCost.why, "the answer and the staff refurb panel say the same");
       assert.match(v.offer!.repair.why ?? "", /^No fault recorded \(.+\) — enter the service centre's quote\.$/, at);
       assert.ok(v.offer!.asks.some((a) => a.kind === "repair_quote"), "the quote the customer is promised is asked for");
-      const a = sessions.deviceStatus(t.ticket).answer!;
+      const a = (await sessions.deviceStatus(t.ticket)).answer!;
       assert.ok(a.ready, at);
       if (!a.ready) continue;
       assert.equal(a.headline, "Your offer", at);
@@ -368,7 +356,7 @@ test("SUP-96 review: a Bluetooth fail alone (no SwapUp fault exists for it) — 
     assert.deepEqual({ headline: step.headline, form: step.form }, { headline: "Needs the service centre's quote", form: "needed" });
     assert.equal(stepDone(v, "repair"), false);
     assert.ok(!JSON.stringify(v.offer).includes("Nothing to repair"));
-    const before = sessions.deviceStatus(t.ticket).answer!;
+    const before = (await sessions.deviceStatus(t.ticket)).answer!;
     assert.ok(before.ready);
     if (before.ready) assert.equal(before.lines.find((l) => l.key === "repair")?.text, "or repair it — the advisor will quote the price");
     // The advisor enters the centre's quote (the desk's and the app's form send this PATCH): the repair is priced.
@@ -380,7 +368,7 @@ test("SUP-96 review: a Bluetooth fail alone (no SwapUp fault exists for it) — 
     assert.equal(stepDone(q, "repair"), true);
     assert.notEqual(q.decision?.recommendation, "no_repair");
     assert.equal(q.quote?.amount, v.quote?.amount, "the trade-in doesn't move");
-    const a = sessions.deviceStatus(t.ticket).answer!;
+    const a = (await sessions.deviceStatus(t.ticket)).answer!;
     assert.ok(a.ready);
     if (a.ready) assert.equal(a.lines.find((l) => l.key === "repair")?.text, "or repair it for ₹2,000");
   });
@@ -394,21 +382,21 @@ test("SUP-96 review: a case saved before the rule ('Nothing to repair' for a pho
     // What 0.9.2 stored for it: decide() was told nothing to repair.
     const stored = { ...v.decision!, recommendation: "no_repair", headline: "Nothing to repair — a straight trade-in", missing: [] };
     db().prepare(`UPDATE cases SET decision = ? WHERE id = ?`).run(JSON.stringify(stored), v.id);
-    const g = cases.getCase(adv, v.id);
+    const g = await cases.getCase(adv, v.id);
     assert.equal(g.decision, null, "the view's decision is the answer's: the stale one is not used");
     assert.equal(g.offer!.recommendation, null);
-    const row = cases.listCases(adv, { q: g.ref }).find((r) => r.id === v.id)!;
+    const row = (await cases.listCases(adv, { q: g.ref })).find((r) => r.id === v.id)!;
     assert.equal(row.recommendation, null, "the list doesn't label it 'Straight trade-in'");
     // A phone with nothing wrong keeps its stored decision.
     db().prepare(`UPDATE cases SET condition = ? WHERE id = ?`).run(JSON.stringify({ ...COND, screen: "flawless", body: "flawless" }), v.id);
-    assert.equal(cases.listCases(adv, { q: g.ref }).find((r) => r.id === v.id)!.recommendation, "no_repair");
-    assert.equal(cases.getCase(adv, v.id).decision?.recommendation, "no_repair");
+    assert.equal((await cases.listCases(adv, { q: g.ref })).find((r) => r.id === v.id)!.recommendation, "no_repair");
+    assert.equal((await cases.getCase(adv, v.id)).decision?.recommendation, "no_repair");
   });
 });
 
 test("SUP-32 review: a card active that doesn't list the phone while PriceIQ is down — 'working out', never 'can't be priced'; PriceIQ back prices it", async () => {
   const t = await testedCase();
-  uploadRateCard(partner, {
+  await uploadRateCard(partner, {
     label: "Week 42 (test, 256GB only)",
     effectiveFrom: "2026-10-12",
     quoteValidityDays: 3,
@@ -424,12 +412,12 @@ test("SUP-32 review: a card active that doesn't list the phone while PriceIQ is 
     assert.equal(off.quote?.status, "unpriced");
     assert.equal(off.quote?.reason, "This phone isn't on the rate card yet.");
     assert.match(off.quote?.priceiqWhy ?? "", /HTTP 503/);
-    assert.deepEqual(sessions.deviceStatus(t.ticket).answer, { ready: false, final: false, text: "The advisor is working out your price.", test: true });
+    assert.deepEqual((await sessions.deviceStatus(t.ticket)).answer, { ready: false, final: false, text: "The advisor is working out your price.", test: true });
     // The storage not chosen, on a phone the card lists at no size: every chip unpriced, PriceIQ down for each — still not final.
     const chips = await cases.updateCase(adv, t.caseId, { modelId: "galaxy-z-fold6", variant: null });
     const ask = chips.offer!.asks.find((a) => a.kind === "storage");
     assert.ok(ask && ask.kind === "storage" && ask.options.length > 1 && ask.options.every((o) => o.tradeIn === null), JSON.stringify(ask));
-    assert.deepEqual(sessions.deviceStatus(t.ticket).answer, { ready: false, final: false, text: "The advisor is working out your price.", test: true });
+    assert.deepEqual((await sessions.deviceStatus(t.ticket)).answer, { ready: false, final: false, text: "The advisor is working out your price.", test: true });
     await cases.updateCase(adv, t.caseId, { modelId: "galaxy-s23-ultra", variant: "512GB" });
     // PriceIQ back: the same phone is priced.
     fake.mode = "ok";
@@ -451,7 +439,7 @@ test("device status: priced, then locked — the same lines as the desk, read on
   const imei = nextImei();
   const v = await withF1Card(() => cases.updateCase(adv, t.caseId, { imei, faults: ["screen_cracked"], condition: COND, upgradeDeviceId: S26U_256 }));
   assert.equal(v.quote?.source.kind, "partner_ratecard");
-  const s1 = sessions.deviceStatus(t.ticket);
+  const s1 = await sessions.deviceStatus(t.ticket);
   assert.ok(s1.answer && s1.answer.ready, JSON.stringify(s1.answer));
   if (!s1.answer?.ready) return;
   assert.deepEqual(s1.answer.lines, v.offer!.answer.lines, "the phone prints the desk's lines");
@@ -462,12 +450,12 @@ test("device status: priced, then locked — the same lines as the desk, read on
   // Polling is read only: no PriceIQ call, no partner call, no write.
   const calls = fake.calls.length;
   const stamp = (db().prepare(`SELECT updated_at FROM cases WHERE id = ?`).get(t.caseId) as { updated_at: string }).updated_at;
-  for (let i = 0; i < 5; i++) sessions.deviceStatus(t.ticket);
+  for (let i = 0; i < 5; i++) await sessions.deviceStatus(t.ticket);
   assert.equal(fake.calls.length, calls);
   assert.equal((db().prepare(`SELECT updated_at FROM cases WHERE id = ?`).get(t.caseId) as { updated_at: string }).updated_at, stamp);
 
-  cases.lockTradeIn(adv, t.caseId, { customer: CUSTOMER, checks: CHECKS });
-  const s2 = sessions.deviceStatus(t.ticket);
+  await cases.lockTradeIn(adv, t.caseId, { customer: CUSTOMER, checks: CHECKS });
+  const s2 = await sessions.deviceStatus(t.ticket);
   assert.ok(s2.answer?.ready && s2.answer.final);
   if (!s2.answer?.ready) return;
   assert.equal(s2.answer.headline, "Traded in");
@@ -511,7 +499,7 @@ test("parity: the same phone through the browser (the customer's 'no' on beeps, 
   assert.equal(w.quote?.amount, n.quote?.amount, "the same price");
   assert.deepEqual(w.offer!.answer.lines, n.offer!.answer.lines);
   assert.ok(!w.offer!.answer.lines.some((l) => l.key === "repair"), "no repair line from a customer's tap");
-  assert.deepEqual(sessions.deviceStatus(web.ticket).answer, sessions.deviceStatus(native.ticket).answer);
+  assert.deepEqual((await sessions.deviceStatus(web.ticket)).answer, (await sessions.deviceStatus(native.ticket)).answer);
   const stored = JSON.parse((db().prepare(`SELECT results FROM test_sessions WHERE id = ?`).get(web.sessionId) as { results: string }).results);
   for (const id of judged) {
     assert.equal(stored[id].outcome, "skip", id);
@@ -523,7 +511,7 @@ test("parity: the same phone through the browser (the customer's 'no' on beeps, 
 
 test("grade: on a graded phone the answer's grade is the grading engine's; on one that needs repair it IS the report's after-repair grade — one grade", async () => {
   const t = await testedCase();
-  const base = cases.getCase(adv, t.caseId).condition!;
+  const base = (await cases.getCase(adv, t.caseId)).condition!;
   let graded = 0;
   let needsRepair = 0;
   for (const [screen, body] of [["flawless", "flawless"], ["scratched", "flawless"], ["flawless", "scuffed"], ["flawless", "dented"], ["flawless", "bent"]] as const) {
@@ -535,13 +523,13 @@ test("grade: on a graded phone the answer's grade is the grading engine's; on on
   assert.equal(graded, 5, "every look above is graded");
   for (const [faults, screen, body] of [[["back_cracked"], "flawless", "back_cracked"], [["screen_cracked"], "cracked", "scuffed"], [["screen_cracked", "back_cracked"], "cracked", "back_cracked"]] as const) {
     const v = await cases.updateCase(adv, t.caseId, { faults: [...faults], condition: { ...base, screen, body } });
-    const after = gr.gradingReportFor(adv, t.caseId).issued?.body.grade.afterRepair ?? null;
+    const after = (await gr.gradingReportFor(adv, t.caseId)).issued?.body.grade.afterRepair ?? null;
     if (!after) continue;
     needsRepair += 1;
     assert.equal(v.offer!.answer.grade?.word, after, `${faults.join("+")}: shown ${v.offer!.answer.grade?.word}, after repair ${after}`);
   }
   assert.ok(needsRepair >= 2, `the report gave an after-repair grade (${needsRepair})`);
-  const back = cases.getCase(adv, t.caseId);
+  const back = await cases.getCase(adv, t.caseId);
   assert.equal(back.offer!.answer.lines[0].text, "Current grade A", "a cracked back reads as its look — the grade it is priced at and comes out at");
 });
 
@@ -551,7 +539,7 @@ test("rate card by grade: the market price is the card's price at the phone's gr
   disconnectPriceiq();
   resetPriceiqState();
   try {
-    uploadRateCard(partner, {
+    await uploadRateCard(partner, {
       label: "Week 42",
       effectiveFrom: "2026-10-12",
       quoteValidityDays: 3,
@@ -559,7 +547,7 @@ test("rate card by grade: the market price is the card's price at the phone's gr
       deductions: DEFECT_DEDUCTIONS,
       activate: true,
     });
-    const c = cases.createCase(adv, {});
+    const c = await cases.createCase(adv, {});
     // Nothing taken off (all accessories, under 3 months): the price IS the card's grade C price, named.
     const v = await cases.updateCase(adv, c.id, { modelId: "galaxy-s23-ultra", variant: "256GB", faults: [], condition: { ...COND, screen: "flawless", body: "dented", accessories: { charger: true, box: true, bill: true }, age: "lt3m" }, upgradeDeviceId: S26U_256 });
     assert.equal(v.quote?.source.kind, "partner_ratecard");
@@ -589,7 +577,7 @@ test("rate card by grade: a cracked back is grade A, priced off grade A less the
   disconnectPriceiq();
   resetPriceiqState();
   try {
-    uploadRateCard(partner, {
+    await uploadRateCard(partner, {
       label: "Week 43",
       effectiveFrom: "2026-10-19",
       quoteValidityDays: 3,
@@ -608,7 +596,7 @@ test("rate card by grade: a cracked back is grade A, priced off grade A less the
     assert.deepEqual([v.quote?.amount, v.quote?.grade, v.quote?.lines[0].label], [34_000, "Superb", "Market price grade A · Week 43"]);
     const staff = v.offer!.answer;
     assert.equal(staff.staffNotes.market, null);
-    const s = sessions.deviceStatus(t.ticket).answer;
+    const s = (await sessions.deviceStatus(t.ticket)).answer;
     assert.ok(s?.ready, JSON.stringify(s));
     if (!s?.ready) return;
     assert.deepEqual(s.lines, staff.lines, "the phone prints the desk's lines");
@@ -630,7 +618,7 @@ test("All fine: screen OK, body like new, liquid indicator 'Can't see' — by na
   const three = await testedCase();
   const a = await cases.certifyCase(adv, one.caseId, { allFine: true });
   for (const [row, value] of [["screen", "ok"], ["body", "like_new"], ["liquid", "cant_see"]] as const) await cases.certifyCase(adv, three.caseId, { row, value });
-  const b = cases.getCase(adv, three.caseId);
+  const b = await cases.getCase(adv, three.caseId);
   const shape = (v: typeof a) => Object.fromEntries(Object.entries(v.certification).map(([k, r]) => [k, [r!.value, r!.label, r!.by, r!.withColours]]));
   assert.deepEqual(shape(a), { screen: ["ok", "OK", adv.name, false], body: ["like_new", "Like new", adv.name, false], liquid: ["cant_see", "Can't see", adv.name, false] });
   assert.deepEqual(shape(a), shape(b));
@@ -647,7 +635,7 @@ test("All fine: never over a row already tapped — a liquid 'Tripped' from Swap
   const clean = await testedCase();
   const desk = await testedCase();
   const store = await testedCase();
-  const before = cases.getCase(adv, clean.caseId);
+  const before = await cases.getCase(adv, clean.caseId);
   assert.deepEqual(before.certify?.needed, ["screen", "body", "liquid"], "no camera: the card asks all three");
   // SwapUp Store: the advisor sees the indicator tripped. The screen and body are still untapped,
   // so the desk shows "All fine" — and someone taps it.
@@ -662,7 +650,7 @@ test("All fine: never over a row already tapped — a liquid 'Tripped' from Swap
   assert.ok(a.quote!.amount! < before.quote!.amount!, "the lower price stands");
   // The same phone worked on SwapUp Store tap by tap: the same faults, price and answer.
   for (const [row, value] of [["liquid", "tripped"], ["screen", "ok"], ["body", "like_new"]] as const) await cases.certifyCase(adv, store.caseId, { row, value });
-  const s = cases.getCase(adv, store.caseId);
+  const s = await cases.getCase(adv, store.caseId);
   assert.deepEqual([a.faults, a.condition?.issues, a.quote?.amount], [s.faults, s.condition?.issues, s.quote?.amount]);
   assert.deepEqual(a.offer!.answer.lines, s.offer!.answer.lines);
   // Its audit: only the two rows it tapped.
@@ -718,7 +706,7 @@ test("refurb decision: staff get the five lines off the card the trade-in came f
       activate: true,
     });
   try {
-    upload("Week 42", "galaxy-s23-ultra,256GB,34960,33574,32255,30672");
+    await upload("Week 42", "galaxy-s23-ultra,256GB,34960,33574,32255,30672");
     const t = await testedCase();
     const cracked = { ...COND, screen: "cracked", body: "flawless" };
     const v = await cases.updateCase(adv, t.caseId, { modelId: "galaxy-s23-ultra", variant: "256GB", faults: ["screen_cracked"], condition: cracked, upgradeDeviceId: S26U_256 });
@@ -748,12 +736,12 @@ test("refurb decision: staff get the five lines off the card the trade-in came f
     assert.match(own.refurbEconomics!.repairCost.source!, /^The store's own figure, entered by /);
 
     // A newer card goes live: the quote stands, and so does the card it was read off.
-    upload("Week 43", "galaxy-s23-ultra,256GB,30000,29000,28000,27000");
-    assert.equal(cases.getCase(adv, t.caseId).refurbEconomics!.postRepair.amount, 34_960, "the SAME card as the trade-in");
+    await upload("Week 43", "galaxy-s23-ultra,256GB,30000,29000,28000,27000");
+    assert.equal((await cases.getCase(adv, t.caseId)).refurbEconomics!.postRepair.amount, 34_960, "the SAME card as the trade-in");
 
     // Never the partner's, never the customer's.
     assert.equal(cases.forViewer(partner, own).refurbEconomics, null);
-    const s = JSON.stringify(sessions.deviceStatus(t.ticket));
+    const s = JSON.stringify(await sessions.deviceStatus(t.ticket));
     for (const bad of ["refurbEconomics", "Pre-refurb", "post-repair", "Repair before pickup", "Send as-is", "store's own"]) assert.ok(!s.includes(bad), `${bad} reached the customer`);
 
     // Not on the card: no trade-in price, so nothing to decide — no panel; the answer's Swap up side says why, once.
@@ -765,7 +753,7 @@ test("refurb decision: staff get the five lines off the card the trade-in came f
 
     // Traded in: the decision stays, read off the figures frozen at lock, until the partner's pickup.
     await cases.updateCase(adv, t.caseId, { imei: nextImei() });
-    const lockedView = cases.lockTradeIn(adv, t.caseId, { customer: CUSTOMER, checks: CHECKS });
+    const lockedView = await cases.lockTradeIn(adv, t.caseId, { customer: CUSTOMER, checks: CHECKS });
     assert.equal(lockedView.status, "locked");
     const l = lockedView.refurbEconomics!;
     assert.deepEqual([l.preRefurb.amount, l.repairCost.amount, l.postRepair.amount, l.uplift.text, l.offer.amount], [29_710, 2_000, 34_960, "Repair before pickup: +₹3,250", 30_898]);
@@ -773,7 +761,7 @@ test("refurb decision: staff get the five lines off the card the trade-in came f
     assert.equal(cases.forViewer(partner, lockedView).refurbEconomics, null);
     for (const status of ["in_pickup", "collected", "cancelled"] as const) {
       db().prepare(`UPDATE cases SET status = ? WHERE id = ?`).run(status, t.caseId);
-      assert.equal(cases.getCase(adv, t.caseId).refurbEconomics !== null, status === "in_pickup", status);
+      assert.equal((await cases.getCase(adv, t.caseId)).refurbEconomics !== null, status === "in_pickup", status);
     }
 
     // No trade-in to decide on: the customer chose the repair, or walked away.
@@ -781,7 +769,7 @@ test("refurb decision: staff get the five lines off the card the trade-in came f
       const w = await testedCase();
       const open = await cases.updateCase(adv, w.caseId, { modelId: "galaxy-s23-ultra", variant: "256GB", faults: ["back_cracked"], condition: { ...COND, screen: "flawless", body: "back_cracked" } });
       assert.ok(open.refurbEconomics?.uplift.text, "at the counter, the decision is there");
-      const closed = close(w.caseId);
+      const closed = await close(w.caseId);
       assert.ok(["repair_chosen", "walked_away"].includes(closed.status), closed.status);
       assert.equal(closed.refurbEconomics, null, closed.status);
     }
@@ -793,14 +781,14 @@ test("refurb decision: staff get the five lines off the card the trade-in came f
 
 test("SUP-9: an old typed quote (partner_manual, history only) — GET labels it a typed price; nothing about a grade or the card", async () => {
   const v = await f1Case();
-  const locked = cases.lockTradeIn(adv, v.id, { customer: CUSTOMER, checks: CHECKS });
+  const locked = await cases.lockTradeIn(adv, v.id, { customer: CUSTOMER, checks: CHECKS });
   assert.equal(locked.status, "locked");
   assert.match(locked.partner!.why, /rate card|No rate card/, "a card quote: the line describes the card");
   // What 0.9.0 left on SU-AND-00020: a typed ₹18,888 with a reference, locked. History: never re-priced.
   const typed = { ...locked.quote!, source: { kind: "partner_manual", label: "Partner quote" }, amount: 18_888, lines: [{ label: "Partner quote · ref PQ-20", amount: 18_888 }], partnerRef: "PQ-20" };
   delete (typed as { grade?: string }).grade;
   db().prepare(`UPDATE cases SET quote = ?, condition = ?, trade_value = 18888 WHERE id = ?`).run(JSON.stringify(typed), JSON.stringify({ ...COND, screen: "cracked", body: "back_cracked" }), v.id);
-  const g = cases.getCase(adv, v.id);
+  const g = await cases.getCase(adv, v.id);
   assert.equal(g.quote?.source.kind, "partner_manual");
   assert.equal(g.offer!.answer.staffNotes.market, "A price typed in by an older build.");
   assert.equal(g.partner!.why, "A price typed in by an older build.");

@@ -324,7 +324,7 @@ export function DeclaredCard({ ops }: { ops: CaseOps }) {
             </summary>
             <table className="w-full text-[14px] mx-4 mb-3" style={{ width: "calc(100% - 2rem)" }}>
               <tbody>
-                {q.lines.map((l, i) => (
+                {(q.lines ?? []).map((l, i) => (
                   <tr key={`${l.label}-${i}`} className="border-t border-line first:border-t-0">
                     <td className="py-1.5 pr-3 text-ink-2">{l.label}</td>
                     <td className="py-1.5 text-right">
@@ -335,7 +335,7 @@ export function DeclaredCard({ ops }: { ops: CaseOps }) {
               </tbody>
             </table>
             <div className="hint px-4 pb-3 !mt-0">
-              {quoteSourceLabel(q.source)} · quoted {fmtWhen(q.quotedAt)}
+              {q.source ? quoteSourceLabel(q.source) : "Quoted"} · quoted {fmtWhen(q.quotedAt)}
             </div>
           </details>
         ) : null}

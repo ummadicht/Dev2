@@ -144,7 +144,7 @@ type CaseRow = {
   ref: string;
   org_id: string;
   store_id: string;
-  advisor_id: string;
+  advisor_id: string | null;
   status: CaseStatus;
   customer: string | null;
   model_id: string | null;
@@ -190,6 +190,7 @@ type CaseRow = {
   storage_quotes: string | null;
   measured_storage: string | null;
   certification: string | null;
+  report_token: string | null;
   /** Migration 17 (lib/server/imeiResolve.ts): each IMEI's resolution, the early KYM answer, where the model came from. */
   imei_lookup: string | null;
   kym_early: string | null;
@@ -345,7 +346,7 @@ export type CaseView = {
   storeId: string;
   storeName: string;
   storeCode: string;
-  advisorId: string;
+  advisorId: string | null;
   advisorName: string | null;
   customer: Customer | null;
   device: { modelId: string; brand: string; model: string; series: string | null; variant: string | null; releaseYear: number | null; supportEndYear: number | null; ageYears: number | null } | null;
@@ -528,7 +529,10 @@ function storedQuote(raw: string | null): PartnerQuote | null {
 async function offerFor(c: CaseRow, store: StoreRow): Promise<Offer> {
   const tm = await getTradeModel(c.model_id);
   const org = await getOrg(c.org_id);
-  const faults = parseJson<FaultId[]>(c.faults, []);
+  const rawFaults = parseJson<unknown>(c.faults, []);
+  const faults: FaultId[] = Array.isArray(rawFaults) ? (rawFaults as FaultId[]) : [];
+  const rawVariants = tm ? parseJson<unknown>(tm.variants, []) : [];
+  const variants: string[] = Array.isArray(rawVariants) ? (rawVariants as string[]) : [];
   const condition = parseJson<ConditionAnswers | null>(c.condition, null);
   const quote = storedQuote(c.quote);
   const camera = parseJson<CaseCameraCheck | null>(c.camera_check, null);
@@ -542,12 +546,12 @@ async function offerFor(c: CaseRow, store: StoreRow): Promise<Offer> {
       : false;
   return buildOffer({
     status: c.status,
-    device: tm ? { label: `${tm.brand} ${tm.model}`, variant: c.variant, variants: parseJson<string[]>(tm.variants, []) } : null,
+    device: tm ? { label: `${tm.brand} ${tm.model}`, variant: c.variant, variants } : null,
     variantSource: c.variant ? readVariantSource(c.variant_source) : null,
     measuredStorage: c.measured_storage ?? null,
     storageQuotes: parseJson<StorageQuote[] | null>(c.storage_quotes, null),
     faultCount: faults.length,
-    coverage: c.coverage,
+    coverage: c.coverage ?? "none",
     repair: parseJson<RepairEstimate | null>(c.repair, null),
     manualRepair,
     repairNotServiced: repairNotServicedFor(tm, org),
@@ -583,8 +587,9 @@ async function imeiUnlistedOn(c: CaseRow, tm: TradeModel | null): Promise<string
 
 async function toView(c: CaseRow, store: StoreRow, viewer: { partner?: boolean } = {}): Promise<CaseView> {
   const tm = await getTradeModel(c.model_id);
-  const advisor = await queryOne<{ name: string }>(`SELECT name FROM users WHERE id = $1`, [c.advisor_id]);
-  const faults = parseJson<FaultId[]>(c.faults, []);
+  const advisor = c.advisor_id ? await queryOne<{ name: string }>(`SELECT name FROM users WHERE id = $1`, [c.advisor_id]) : null;
+  const rawFaults = parseJson<unknown>(c.faults, []);
+  const faults: FaultId[] = Array.isArray(rawFaults) ? (rawFaults as FaultId[]) : [];
   const condition = parseJson<ConditionAnswers | null>(c.condition, null);
   const quote = storedQuote(c.quote);
   const quoteExpired = quoteLapsed(c, quote);
@@ -593,7 +598,7 @@ async function toView(c: CaseRow, store: StoreRow, viewer: { partner?: boolean }
   const mode = org?.partner_id ? await partnerMode(org.partner_id) : null;
   // A price typed in by an older build (partner_manual, history only) came from no rate card: its
   // line says what it is, never the card's (SUP-9).
-  const partner = mode && quote?.source.kind === "partner_manual" ? { ...mode, why: TYPED_PRICE_NOTE } : mode;
+  const partner = mode && quote?.source?.kind === "partner_manual" ? { ...mode, why: TYPED_PRICE_NOTE } : mode;
   const view: CaseView = {
     id: c.id,
     ref: c.ref,
@@ -629,7 +634,7 @@ async function toView(c: CaseRow, store: StoreRow, viewer: { partner?: boolean }
     closedReason: c.closed_reason,
     faults,
     faultSources: reconcileFaultSources(parseJson<FaultSources>(c.fault_sources, {}), faults),
-    coverage: c.coverage,
+    coverage: c.coverage ?? "none",
     condition,
     conditionProblems: condition ? conditionFloor(condition, faults) : [],
     camera: camera ? withoutGradeiqId(camera) : null,
@@ -691,7 +696,7 @@ async function toView(c: CaseRow, store: StoreRow, viewer: { partner?: boolean }
   // The staff refurb decision, from the answer's own figures and the card the trade-in was read off —
   // only while there is a priced trade-in to decide on (at the counter, or traded in until pickup).
   if (!viewer.partner && refurbDecisionShown(c.status, view.offer.swap)) {
-    const cardId = quote?.status === "priced" && quote.source.kind === "partner_ratecard" ? quote.source.rateCardId : null;
+    const cardId = quote?.status === "priced" && quote.source?.kind === "partner_ratecard" ? quote.source.rateCardId : null;
     view.refurbEconomics = refurbEconomics({
       swap: view.offer.swap,
       quote,
@@ -845,7 +850,7 @@ export function forViewer(u: SessionUser, view: CaseView): CaseView {
     manualRepair: null,
     quote: partnerQuoteView(view.quote),
     // A PriceIQ "worth once repaired" is the store's own SELL price; only the partner's own repaired value is its business.
-    repairedQuote: view.repairedQuote && view.repairedQuote.source.kind !== "priceiq" ? partnerQuoteView(view.repairedQuote) : null,
+    repairedQuote: view.repairedQuote && view.repairedQuote.source?.kind !== "priceiq" ? partnerQuoteView(view.repairedQuote) : null,
   };
 }
 
@@ -858,7 +863,7 @@ export function forViewer(u: SessionUser, view: CaseView): CaseView {
 export function partnerQuoteView(q: PartnerQuote | null): PartnerQuote | null {
   if (!q) return null;
   const { priceiq: _p, priceiqWhy: _w, ...rest } = q;
-  if (q.source.kind !== "priceiq") return rest;
+  if (q.source?.kind !== "priceiq") return rest;
   return { ...rest, lines: q.amount === null ? [] : [{ label: "Trade-in", amount: q.amount }], source: { ...q.source, label: "Trade-in" } };
 }
 
@@ -935,9 +940,10 @@ export async function listCases(
     const cust = parseJson<Customer | null>(r.customer, null);
     const up = parseJson<UpgradeChoice | null>(r.upgrade, null);
     // The answer's decision, as the case page reads it (offer.ts currentDecision): never a stale "Straight trade-in".
+    const rawFaults = parseJson<unknown>(r.faults, []);
     const dec = currentDecision(
       parseJson<Decision | null>(r.decision, null),
-      nothingToRepairOn(parseJson<FaultId[]>(r.faults, []).length, parseJson<ManualQuote | null>(r.manual_repair, null), parseJson<ConditionAnswers | null>(r.condition, null))
+      nothingToRepairOn(Array.isArray(rawFaults) ? rawFaults.length : 0, parseJson<ManualQuote | null>(r.manual_repair, null), parseJson<ConditionAnswers | null>(r.condition, null))
     );
     return {
       id: r.id,
@@ -1601,7 +1607,7 @@ export async function reprice(u: SessionUser, id: string, opts: { requote?: bool
   if (!tm || !c.variant || !condition || !consistent || blocked) {
     quote = null;
     repairedQuote = null;
-  } else if (opts.requote || !quote || expired || quote.source.kind === "partner_manual" || quote.status !== "priced") {
+  } else if (opts.requote || !quote || expired || quote.source?.kind === "partner_manual" || quote.status !== "priced") {
     // Asked again whenever there is no good price to stand on: the description changed, none yet,
     // expired, an older build's typed quote, or nothing priced it last time (a rate card uploaded
     // since reaches the case on its next re-price, with nobody touching it).
@@ -1617,7 +1623,7 @@ export async function reprice(u: SessionUser, id: string, opts: { requote?: bool
       validityDaysOverride: settings.quoteValidityDays,
     });
     if (!faults.length) repairedQuote = quote.status === "priced" ? { ...quote, validUntil: null } : quote;
-    else if (quote.source.kind === "priceiq") {
+    else if (quote.source?.kind === "priceiq") {
       // Beside a PriceIQ trade-in, the repaired value is PriceIQ's too: the grade after refurb, less
       // the markdown. Where it has none, the partner's rate card may supply one, else there is none.
       repairedQuote = await priceiqRepaired({ partnerId, modelId: tm.id, variant: c.variant, brand: tm.brand, model: tm.model, answers: condition, faults }, quote);
@@ -1709,7 +1715,7 @@ export async function reprice(u: SessionUser, id: string, opts: { requote?: bool
     repairedValue: repairedVal,
     asIsValue: wePay,
     premium,
-    valueSource: quote?.source.kind ?? null,
+    valueSource: quote?.source?.kind ?? null,
     upgrade: upgrade ? { label: upgrade.label, newPrice: upgrade.price, bonus: bonusAmount, supportEndYear: upgrade.supportEndYear } : null,
     old: { ageYears: tm?.release_year ? Math.max(0, thisYear() - tm.release_year) : null, supportEndYear: tm?.support_end_year ?? null },
     thisYear: thisYear(),

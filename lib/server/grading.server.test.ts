@@ -142,8 +142,8 @@ async function stub(handler: (req: IncomingMessage, body: string, res: ServerRes
 
 /** A SwapUp Check run on an S23 Ultra through join → results → complete → Apply. */
 async function testedCase(opts: { results?: Record<string, "pass" | "fail" | "skip">; physical?: boolean } = {}): Promise<{ caseId: string; ticket: string; sessionId: string }> {
-  const created = sessions.createTestSession(adv, { customerName: "Asha Rao", customerPhone: "9820012345" });
-  const joined = sessions.joinByCode(
+  const created = await sessions.createTestSession(adv, { customerName: "Asha Rao", customerPhone: "9820012345" });
+  const joined = await sessions.joinByCode(
     {
       code: created.session.code,
       installId: `install-${Math.random().toString(36).slice(2, 12)}`,
@@ -155,8 +155,8 @@ async function testedCase(opts: { results?: Record<string, "pass" | "fail" | "sk
   const ticket = `Ticket ${joined.ticket}`;
   const at = new Date().toISOString();
   const results = DEFAULT_PLAN.filter((p) => p.id !== "battery_health").map((p) => ({ testId: p.id, outcome: opts.results?.[p.id] ?? "pass", at, detail: null }));
-  sessions.deviceResults(ticket, { results });
-  sessions.deviceComplete(ticket);
+  await sessions.deviceResults(ticket, { results });
+  await sessions.deviceComplete(ticket);
   await sessions.applyTestSession(adv, created.session.id);
   return { caseId: created.session.caseId, ticket, sessionId: created.session.id };
 }
@@ -184,9 +184,9 @@ test("migration 13: report_token, grading_reports, phonecheck_records", () => {
 test("Phonecheck ships switched off: everything works with PHONECHECK_* unset, and the pull says why", async () => {
   assert.deepEqual(pc.phonecheckConfigured().ok, false);
   assert.match(pc.phonecheckConfigured().why, /Phonecheck is off here/);
-  const c = cases.createCase(adv, {});
+  const c = await cases.createCase(adv, {});
   await cases.updateCase(adv, c.id, { imei: IMEI_B });
-  const v = cases.getCase(adv, c.id);
+  const v = await cases.getCase(adv, c.id);
   assert.equal(v.grading?.phonecheck?.canPull, false);
   assert.match(v.grading!.phonecheck!.why!, /Phonecheck is off here/);
   await assert.rejects(pc.pullForCase(adv, c.id), (e: Error & { status?: number }) => e.status === 409 && /Phonecheck is off here/.test(e.message));
@@ -206,7 +206,7 @@ let main: { caseId: string; ticket: string; sessionId: string };
 
 test("SwapUp Check through Apply issues v1 with grade + letter + reasons; the public link's hash recomputes", async () => {
   main = await testedCase();
-  const v = cases.getCase(adv, main.caseId);
+  const v = await cases.getCase(adv, main.caseId);
   assert.equal(v.grading?.status, "graded");
   assert.equal(v.grading?.grade, "Superb");
   assert.equal(v.grading?.letter, "A");
@@ -217,7 +217,7 @@ test("SwapUp Check through Apply issues v1 with grade + letter + reasons; the pu
   assert.equal(vs.length, 1);
   assert.equal(vs[0].reason, "swapup_check");
 
-  const r = gr.gradingReportFor(adv, main.caseId);
+  const r = await gr.gradingReportFor(adv, main.caseId);
   assert.ok(r.live && r.issued && r.staff);
   assert.deepEqual(r.live.provisional.map((x) => x.code).sort(), ["PV1", "PV5"]);
   assert.equal(r.issued.body.grade.letterScale, "A = Superb, B = Good, C = Fair, D = Best Value — not CTIA.");
@@ -240,8 +240,8 @@ test("SwapUp Check through Apply issues v1 with grade + letter + reasons; the pu
   assert.equal((await publicRoute.GET(new Request(`http://x/api/r/${token}?v=9`), params({ token }))).status, 404);
 });
 
-test("the customer's phone gets its report link and the grade on both scales once the session is applied", () => {
-  const s = sessions.deviceStatus(main.ticket);
+test("the customer's phone gets its report link and the grade on both scales once the session is applied", async () => {
+  const s = await sessions.deviceStatus(main.ticket);
   assert.equal(s.status, "applied");
   assert.match(String(s.reportPath), /^\/r\/[A-Za-z0-9_-]{22}$/);
   // The grade the link opens on (the latest issued version): the SwapUp grade, its letter, nothing else.
@@ -251,28 +251,28 @@ test("the customer's phone gets its report link and the grade on both scales onc
   assert.ok("answer" in s);
   assert.doesNotMatch(JSON.stringify({ ...s, answer: undefined }), MONEY);
   // Before Apply there is neither.
-  const fresh = sessions.createTestSession(adv, {});
-  const j = sessions.joinByCode(
+  const fresh = await sessions.createTestSession(adv, {});
+  const j = await sessions.joinByCode(
     { code: fresh.session.code, installId: "install-status-check", appVersion: "0.6.0", device: { brand: "samsung", manufacturer: "samsung", modelName: "SM-S918B", modelCode: "SM-S918B", osVersion: "14", isPhysicalDevice: true } },
     "127.0.0.1"
   );
-  const before = sessions.deviceStatus(`Ticket ${j.ticket}`);
+  const before = await sessions.deviceStatus(`Ticket ${j.ticket}`);
   assert.equal(before.reportPath, null);
   assert.equal(before.grading, null);
   assert.equal(before.answer, null, "no answer before Apply");
-  assert.equal(sessions.deviceStatus("Ticket nope-nope-nope-nope-nope-nope").grading, null);
-  assert.equal(sessions.deviceStatus("Ticket nope-nope-nope-nope-nope-nope").answer, null, "a closed ticket has no answer");
+  assert.equal((await sessions.deviceStatus("Ticket nope-nope-nope-nope-nope-nope")).grading, null);
+  assert.equal((await sessions.deviceStatus("Ticket nope-nope-nope-nope-nope-nope")).answer, null, "a closed ticket has no answer");
 });
 
 test("versioning: an edit that moves the grade is v2; the same edit again is still v2", async () => {
-  const before = cases.getCase(adv, main.caseId).condition!;
+  const before = (await cases.getCase(adv, main.caseId)).condition!;
   await cases.updateCase(adv, main.caseId, { condition: { ...before, screen: "scratched" } });
-  let v = cases.getCase(adv, main.caseId);
+  let v = await cases.getCase(adv, main.caseId);
   assert.equal(v.grading?.grade, "Good");
   assert.equal(v.grading?.label, "Good (B) · provisional");
   assert.equal(versions(main.caseId).length, 2);
   await cases.updateCase(adv, main.caseId, { condition: { ...before, screen: "scratched" } });
-  v = cases.getCase(adv, main.caseId);
+  v = await cases.getCase(adv, main.caseId);
   assert.equal(versions(main.caseId).length, 2);
   assert.equal(v.grading?.report?.version, 2);
   // An edit that changes nothing graded (the refurb cost) issues nothing either.
@@ -297,7 +297,7 @@ test("a Phonecheck JSON upload merges worse-of: the mic failure makes it Needs r
   assert.equal(v.grading?.label, "Needs repair");
   const vs = versions(main.caseId);
   assert.equal(vs.at(-1)?.reason, "phonecheck");
-  const r = gr.gradingReportFor(adv, main.caseId);
+  const r = await gr.gradingReportFor(adv, main.caseId);
   const mic = r.live!.tests.find((t) => t.id === "mic")!;
   assert.equal(mic.result, "failed");
   assert.deepEqual(mic.sources.map((s) => [s.source, s.outcome]), [["swapup_check", "pass"], ["phonecheck_upload", "fail"]]);
@@ -320,10 +320,10 @@ test("re-uploading the same check is stale and changes nothing; a fetched copy w
   // The same check arriving from Phonecheck itself replaces the upload (same key).
   const rec = (await import("../domain/phonecheck.ts")).readPhonecheck(pcRecord(), {});
   assert.ok(rec.ok);
-  const stored = pc.storeRecord(rec.record, pcRecord(), "webhook", null);
+  const stored = await pc.storeRecord(rec.record, pcRecord(), "webhook", null);
   assert.equal(stored.outcome, "replace");
   // …and an upload of a check already fetched keeps the fetched copy.
-  assert.equal(pc.storeRecord(rec.record, pcRecord(), "upload", null).outcome, "fetched_copy");
+  assert.equal((await pc.storeRecord(rec.record, pcRecord(), "upload", null)).outcome, "fetched_copy");
 });
 
 /* ─────────────────────────── IMEI mismatch ─────────────────────────── */
@@ -345,7 +345,7 @@ test("IMEI mismatch: 409 naming both numbers; an advisor can't override; a manag
   const done = await pc.attachForCase(mgr, t.caseId, j.record.id, { confirmMismatch: true, reason: "IMEI 2 on the box label matches" });
   assert.equal(done.outcome, "attached");
   assert.equal(done.case.imei, IMEI_B); // the case keeps its own number
-  const r = gr.gradingReportFor(mgr, t.caseId);
+  const r = await gr.gradingReportFor(mgr, t.caseId);
   assert.ok(r.live!.provisional.some((p) => p.code === "PV8" && /box label/.test(p.text)));
   // Another store can't see or take it.
   await assert.rejects(pc.attachForCase(otherAdv, t.caseId, j.record.id, {}), (e: Error & { status?: number }) => e.status === 404);
@@ -353,10 +353,10 @@ test("IMEI mismatch: 409 naming both numbers; an advisor can't override; a manag
 
 test("a failed Wi-Fi test is priced: Apply puts the Wi-Fi / Bluetooth issue on the condition, and the trade-in deducts it", async () => {
   const t = await testedCase({ results: { connectivity: "fail" } });
-  const v = cases.getCase(adv, t.caseId);
+  const v = await cases.getCase(adv, t.caseId);
   assert.ok(v.condition?.issues.includes("wifi_bt"), JSON.stringify(v.condition));
   assert.ok(v.quote?.lines.some((l) => /Wi-Fi/.test(l.label)), JSON.stringify(v.quote?.lines));
-  const r = gr.gradingReportFor(adv, t.caseId);
+  const r = await gr.gradingReportFor(adv, t.caseId);
   assert.ok(!r.live!.provisional.some((p) => p.code === "PV6" && /Wi-Fi/.test(p.text)), "no longer a note to confirm by hand");
 });
 
@@ -437,12 +437,12 @@ test("an uploaded report image is read by AI into the same record — key in a h
     // No key → 503 with a clear message; the JSON upload still works.
     await assert.rejects(pc.uploadFileForCase(adv, t.caseId, { bytes: PNG, mime: "image/png", name: "report.png" }), (e: Error & { status?: number }) => e.status === 503 && /AI reader not set up/.test(e.message));
     // …and the case's Phonecheck GET says so up front, so the desk greys the button before anything is chosen.
-    const off = pc.phonecheckForCase(adv, t.caseId).aiReader;
+    const off = (await pc.phonecheckForCase(adv, t.caseId)).aiReader;
     assert.equal(off.ok, false);
     assert.match(off.why, /AI reader not set up/);
     process.env.GEMINI_API_KEY = KEY;
     process.env.GEMINI_API_BASE = `${g.base}/v1beta`;
-    const on = pc.phonecheckForCase(adv, t.caseId).aiReader;
+    const on = (await pc.phonecheckForCase(adv, t.caseId)).aiReader;
     assert.equal(on.ok, true);
     assert.ok(!JSON.stringify(on).includes(KEY), "the key never reaches a client");
     // Wrong type, too big.
@@ -466,7 +466,7 @@ test("an uploaded report image is read by AI into the same record — key in a h
     assert.ok(!call.url.includes(KEY));
     assert.match(call.url, /\/v1beta\/models\/gemini-2\.5-flash:generateContent$/);
     assert.equal(JSON.parse(call.body).contents[0].parts[1].inline_data.mime_type, "image/png");
-    const r = gr.gradingReportFor(adv, t.caseId);
+    const r = await gr.gradingReportFor(adv, t.caseId);
     const codes = r.live!.provisional.map((p) => p.code);
     assert.ok(codes.includes("PV7") && codes.includes("PV12"));
     assert.equal(r.issued!.body.phonecheck?.aiRead, true);
@@ -499,7 +499,7 @@ test("an uploaded report image is read by AI into the same record — key in a h
     const t2 = await testedCase();
     await assert.rejects(pc.uploadFileForCase(adv, t2.caseId, { bytes: PNG, mime: "image/png", name: null }), (e: Error & { status?: number }) => e.status === 503 && /out of credit/.test(e.message) && !e.message.includes(KEY));
     // …and from then on the reader says it is off, up front, and makes no paid call to learn it again.
-    const outage = pc.phonecheckForCase(adv, t2.caseId).aiReader;
+    const outage = (await pc.phonecheckForCase(adv, t2.caseId)).aiReader;
     assert.deepEqual(outage, { ok: false, why: "AI reader off — out of credit; upload the Phonecheck JSON." });
     const calls = g.seen.length;
     const t4 = await testedCase();
@@ -507,7 +507,7 @@ test("an uploaded report image is read by AI into the same record — key in a h
     assert.equal(g.seen.length, calls, "no call to Google while the reader is off");
     // A different key (the account fixed) is tried at once.
     process.env.GEMINI_API_KEY = `${KEY}-topped-up`;
-    assert.equal(pc.phonecheckForCase(adv, t4.caseId).aiReader.ok, true);
+    assert.equal((await pc.phonecheckForCase(adv, t4.caseId)).aiReader.ok, true);
     assert.ok(![...errors, ...logs].some((l) => l.includes(KEY)), "the key is never logged");
   } finally {
     delete process.env.GEMINI_API_KEY;
@@ -540,7 +540,7 @@ test("an AI reading never fills storage, model or IMEI; Phonecheck's own JSON of
     process.env.GEMINI_API_BASE = `${g.base}/v1beta`;
     const t = await testedCase();
     await cases.updateCase(adv, t.caseId, { variant: null });
-    const before = cases.getCase(adv, t.caseId);
+    const before = await cases.getCase(adv, t.caseId);
     assert.equal(before.device?.variant ?? null, null);
     const ai = await pc.uploadFileForCase(adv, t.caseId, { bytes: PNG, mime: "image/png", name: "report.png" });
     assert.equal(ai.record?.aiRead, true);
@@ -554,7 +554,7 @@ test("an AI reading never fills storage, model or IMEI; Phonecheck's own JSON of
     assert.equal(up.record?.aiRead, false);
     assert.equal(up.record?.batteryHealthPct, 78);
     assert.equal(up.note, null);
-    const r = gr.gradingReportFor(adv, t.caseId);
+    const r = await gr.gradingReportFor(adv, t.caseId);
     assert.equal(r.live!.battery.pct, 78);
     assert.ok(r.live!.reasons.some((x) => x.code === "NR6"), "the JSON's 78 % is what grades");
     assert.ok(!r.live!.provisional.some((x) => x.code === "PV12"), "no longer an AI reading");
@@ -596,13 +596,13 @@ test("the pull: form-encoded GetDeviceInfo with the store's station; not found; 
     const t = await testedCase();
     await cases.updateCase(adv, t.caseId, { imei: IMEI_B });
     // No station yet.
-    assert.match(cases.getCase(adv, t.caseId).grading!.phonecheck!.why!, /station/);
+    assert.match((await cases.getCase(adv, t.caseId)).grading!.phonecheck!.why!, /station/);
     // The store's station, through its route (store manager only).
     const put = await asUser(mgr, () => stationRoute.PUT(new Request("http://x", { method: "PUT", body: JSON.stringify({ station: "Teja-D04" }) }), params({ id: "st_and" })));
     assert.equal(put.status, 200);
     assert.equal(((await put.json()) as { station: string }).station, "Teja-D04");
     assert.equal((await asUser(adv, () => stationRoute.PUT(new Request("http://x", { method: "PUT", body: JSON.stringify({ station: "x" }) }), params({ id: "st_and" })))).status, 403);
-    assert.equal(cases.getCase(adv, t.caseId).grading?.phonecheck?.canPull, true);
+    assert.equal((await cases.getCase(adv, t.caseId)).grading?.phonecheck?.canPull, true);
 
     const out = await pc.pullForCase(adv, t.caseId);
     assert.equal(out.outcome, "attached");
@@ -612,7 +612,7 @@ test("the pull: form-encoded GetDeviceInfo with the store's station; not found; 
     assert.equal(call.headers["content-type"], "application/x-www-form-urlencoded");
     const f = new URLSearchParams(call.body);
     assert.deepEqual([f.get("apiKey"), f.get("username"), f.get("imei"), f.get("IMEI")], ["pc-secret-api-key", "Teja-D04", IMEI_B, IMEI_B]);
-    const r = gr.gradingReportFor(adv, t.caseId);
+    const r = await gr.gradingReportFor(adv, t.caseId);
     assert.ok(!r.live!.provisional.some((x) => x.code === "PV7"), "a fetched record is not an upload");
     assert.equal(versions(t.caseId).at(-1)?.reason, "phonecheck");
     // Throttled: one pull per case per 15 s.
@@ -624,12 +624,12 @@ test("the pull: form-encoded GetDeviceInfo with the store's station; not found; 
     const nf = await pc.pullForCase(adv, t2.caseId);
     assert.equal(nf.outcome, "not_found");
     // The master name is refused → 502 with Phonecheck's meaning, never the key.
-    pc.setStorePhonecheck(mgr, "st_and", { station: "master" });
+    await pc.setStorePhonecheck(mgr, "st_and", { station: "master" });
     const t3 = await testedCase();
     await cases.updateCase(adv, t3.caseId, { imei: IMEI_B });
     await assert.rejects(pc.pullForCase(adv, t3.caseId), (e: Error & { status?: number }) => e.status === 502 && /master account/.test(e.message) && !e.message.includes("pc-secret-api-key"));
   } finally {
-    pc.setStorePhonecheck(mgr, "st_and", { station: null });
+    await pc.setStorePhonecheck(mgr, "st_and", { station: null });
     delete process.env.PHONECHECK_API_BASE;
     delete process.env.PHONECHECK_API_KEY;
     delete process.env.PHONECHECK_CONTRACT_CONFIRMED;
@@ -672,7 +672,7 @@ test("the webhook: 503 with no secret, 401 wrong, stored when right, stale on re
     const vs = versions(main.caseId);
     assert.equal(vs.length, n + 1);
     assert.equal(vs.at(-1)?.reason, "phonecheck");
-    assert.ok(!gr.gradingReportFor(adv, main.caseId).live!.provisional.some((p) => p.code === "PV7"), "Phonecheck's own copy is not an upload");
+    assert.ok(!(await gr.gradingReportFor(adv, main.caseId)).live!.provisional.some((p) => p.code === "PV7"), "Phonecheck's own copy is not an upload");
   } finally {
     delete process.env.PHONECHECK_WEBHOOK_SECRET;
   }
@@ -682,10 +682,10 @@ test("the webhook: 503 with no secret, 401 wrong, stored when right, stale on re
 
 test("lock freezes the report (final, with the IMEI-register result); nothing re-issues after it", async () => {
   // Partner before lock: not found, like the case itself.
-  await assert.rejects(async () => gr.gradingReportFor(partner, main.caseId), (e: Error & { status?: number }) => e.status === 404);
-  const v0 = cases.getCase(adv, main.caseId);
+  await assert.rejects(() => gr.gradingReportFor(partner, main.caseId), (e: Error & { status?: number }) => e.status === 404);
+  const v0 = await cases.getCase(adv, main.caseId);
   assert.deepEqual(v0.lockBlockers, []);
-  cases.lockTradeIn(adv, main.caseId, {
+  await cases.lockTradeIn(adv, main.caseId, {
     customer: { name: "Asha Rao", phone: "9820012345", idType: "aadhaar", idLast4: "1234" },
     checks: { ownership: true, simRemoved: true, imeiMatches: true, noFinanceLock: true, kym: { status: "clear", reference: "SS-1" } },
   });
@@ -697,10 +697,10 @@ test("lock freezes the report (final, with the IMEI-register result); nothing re
   assert.equal(body.phone.kym?.status, "clear");
   assert.ok(body.phone.imei.includes("•"));
   // After lock nothing re-issues.
-  assert.equal(gr.issueIfChanged(main.caseId, "edited", adv.id)?.version, last.version);
+  assert.equal((await gr.issueIfChanged(main.caseId, "edited", adv.id))?.version, last.version);
   assert.equal(versions(main.caseId).length, vs.length);
   // Staff's grade line on the locked case is the frozen version, linked to exactly it (the store app's traded-in card).
-  const g = cases.getCase(adv, main.caseId).grading!;
+  const g = (await cases.getCase(adv, main.caseId)).grading!;
   assert.equal(g.label, last.label);
   assert.equal(g.report?.version, last.version);
   assert.equal(g.report?.final, true);
@@ -720,7 +720,7 @@ test("the partner sees no refurb cost, no answer, no SELL price, and only the fr
   assert.equal(v.grading?.report?.final, true);
   assert.match(v.grading!.report!.path, /\?v=\d+$/);
   // Staff still see their own figures.
-  const staff = cases.getCase(adv, main.caseId);
+  const staff = await cases.getCase(adv, main.caseId);
   assert.equal(staff.refurbCost?.amount, 4200);
 
   const rr = await asUser(partner, () => reportRoute.GET(new Request("http://x"), params({ id: main.caseId })));
@@ -744,7 +744,7 @@ test("the partner never gets the store camera's own GradeIQ letter, range or fla
     assert.equal(v.camera?.gradeRange, null);
     assert.deepEqual(v.camera?.flags, []);
     assert.equal(v.camera?.faults.length, 1, "the camera's faults are on the case — they stay");
-    const staff = cases.getCase(adv, main.caseId);
+    const staff = await cases.getCase(adv, main.caseId);
     assert.equal(staff.camera?.grade, "B");
     assert.deepEqual(staff.camera?.flags, ["screen glare"]);
   } finally {
@@ -752,13 +752,13 @@ test("the partner never gets the store camera's own GradeIQ letter, range or fla
   }
 });
 
-test("pickups carry the frozen counter grade beside each phone", () => {
-  const p = pickups.requestPickup(mgr, { caseIds: [main.caseId] });
+test("pickups carry the frozen counter grade beside each phone", async () => {
+  const p = await pickups.requestPickup(mgr, { caseIds: [main.caseId] });
   const item = p.items.find((i) => i.id === main.caseId)!;
   assert.equal(item.grading?.label, "Needs repair");
   assert.equal(item.grading?.final, true);
   assert.match(item.grading!.path, /^\/r\/[A-Za-z0-9_-]+\?v=\d+$/);
-  const seen = pickups.getPickup(partner, p.id).items.find((i) => i.id === main.caseId)!;
+  const seen = (await pickups.getPickup(partner, p.id)).items.find((i) => i.id === main.caseId)!;
   assert.equal(seen.grading?.version, item.grading?.version);
 });
 
@@ -767,12 +767,12 @@ test("pickups carry the frozen counter grade beside each phone", () => {
 test("a case tested before reports existed gets v1 'backfill' on first read; an untested one gets none", async () => {
   const t = await testedCase();
   db().prepare(`DELETE FROM grading_reports WHERE case_id = ?`).run(t.caseId);
-  const v = cases.getCase(adv, t.caseId);
+  const v = await cases.getCase(adv, t.caseId);
   assert.equal(v.grading?.report?.version, 1);
   assert.equal(versions(t.caseId)[0].reason, "backfill");
-  const untested = cases.createCase(adv, {});
-  assert.equal(cases.getCase(adv, untested.id).grading?.report, null);
-  assert.equal(gr.gradingReportFor(adv, untested.id).issued, null);
+  const untested = await cases.createCase(adv, {});
+  assert.equal((await cases.getCase(adv, untested.id)).grading?.report, null);
+  assert.equal((await gr.gradingReportFor(adv, untested.id)).issued, null);
   assert.equal(versions(untested.id).length, 0);
 });
 
@@ -809,7 +809,7 @@ test("photos are proxied by index from the version's own list — never a redire
 
 test("emulator runs can't be graded; nothing failed to issue along the way", async () => {
   const t = await testedCase({ physical: false });
-  assert.equal(cases.getCase(adv, t.caseId).grading?.status, "cannot_grade");
+  assert.equal((await cases.getCase(adv, t.caseId)).grading?.status, "cannot_grade");
   assert.ok(!errors.some((e) => /grading report not issued/.test(e)), errors.join("\n"));
 });
 

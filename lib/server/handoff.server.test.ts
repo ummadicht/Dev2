@@ -153,9 +153,9 @@ const handoffAt = (id: string) => (JSON.parse(row(id).gradeiq_screen ?? "{}") as
 let installs = 0;
 /** A session the customer's phone (SwapUp Check 0.9.3) joined, its GradeIQ session made and the device report forwarded. */
 async function joined() {
-  const created = sessions.createTestSession(adv, { customerName: "Handoff" });
+  const created = await sessions.createTestSession(adv, { customerName: "Handoff" });
   await until("the GradeIQ session", () => row(created.session.id).gradeiq_state === "ready");
-  const j = sessions.joinByCode(
+  const j = await sessions.joinByCode(
     { code: created.session.code, installId: `install-handoff-${++installs}`, appVersion: "0.9.3", device: { brand: "samsung", manufacturer: "samsung", modelName: "SM-S918B", modelCode: "SM-S918B", osVersion: "14", totalDiskBytes: 256e9, isPhysicalDevice: true } },
     "127.0.0.1"
   );
@@ -165,10 +165,10 @@ async function joined() {
 }
 /** The phone's own poll of /screen (maxAge 0): what SwapUp records from GradeIQ's /screen now. */
 const phonePoll = (ticket: string) => sessions.deviceScreenGet(ticket);
-function finishTests(ticket: string) {
+async function finishTests(ticket: string) {
   const at = new Date().toISOString();
-  sessions.deviceResults(ticket, { results: DEFAULT_PLAN.filter((p) => p.id !== "battery_health").map((p) => ({ testId: p.id, outcome: "pass", at, detail: null })) });
-  sessions.deviceComplete(ticket);
+  await sessions.deviceResults(ticket, { results: DEFAULT_PLAN.filter((p) => p.id !== "battery_health").map((p) => ({ testId: p.id, outcome: "pass", at, detail: null })) });
+  await sessions.deviceComplete(ticket);
 }
 const applyNow = (id: string) => sessions.applyTestSession(adv, id).then(() => "applied", (e: Error & { status?: number }) => `${e.status} ${e.message}`);
 const WAIT = `409 ${sessions.GRADE_WAIT}`;
@@ -192,7 +192,7 @@ test("nextHandoffAt: stamped at the first handoffDone, kept while GradeIQ's flag
 
 test("the handoff flag wiped later by GradeIQ's /cosmetic save: the stamp is kept — and the advisor can no longer 'release' the phone", async () => {
   const s = await joined();
-  sessions.devicePhase(s.ticket, { phase: "scan" });
+  await sessions.devicePhase(s.ticket, { phase: "scan" });
   s.g.screen = { cosmeticDone: true, handoffDone: false, capture: OK };
   await phonePoll(s.ticket);
   assert.equal(handoffAt(s.id), null, "photos accepted, the camera page still running");
@@ -257,7 +257,7 @@ test("the pull window opens at the handoff (T+40 s): Apply waits (GRADE_WAIT) fo
       s.g.screen = { cosmeticDone: true, handoffDone: false, capture: OK };
       await phonePoll(s.ticket);
       assert.equal(handoffAt(s.id), handoff, "kept");
-      finishTests(s.ticket);
+      await finishTests(s.ticket);
     }
     assert.equal(await applyNow(a.id), WAIT, "the grade is still being worked out");
     // T+200 s: past 180 s from the photos, inside 180 s from the handoff — the window is the handoff's.
@@ -268,13 +268,13 @@ test("the pull window opens at the handoff (T+40 s): Apply waits (GRADE_WAIT) fo
     a.g.grade = "final";
     a.g.displayCheck = PASS;
     assert.equal(await applyNow(a.id), "applied");
-    const ca = cases.getCase(adv, a.caseId);
+    const ca = await cases.getCase(adv, a.caseId);
     assert.equal(ca.camera?.final, true);
     assert.equal(ca.camera?.lcd.cameraChecked, true, "the verdict pulled after the handoff is on the case");
     // B: no verdict ever — at T+221 s (181 s after the handoff) the wait ends and Apply goes on.
     mock.timers.tick(21_000);
     assert.equal(await applyNow(b.id), "applied");
-    const cb = cases.getCase(adv, b.caseId);
+    const cb = await cases.getCase(adv, b.caseId);
     assert.equal(cb.camera?.final, false);
     assert.equal(cb.camera?.lcd.cameraChecked, false);
   } finally {
@@ -290,7 +290,7 @@ test("a FINAL grade: Apply waits while the sweep is still running (no handoff ye
   try {
     s.g.screen = { cosmeticDone: true, handoffDone: false, capture: OK };
     await phonePoll(s.ticket);
-    finishTests(s.ticket);
+    await finishTests(s.ticket);
     assert.equal(await applyNow(s.id), WAIT, "the camera page is still sweeping the screen (sweepRunning)");
     mock.timers.tick(30_000);
     s.g.screen = { cosmeticDone: true, handoffDone: true, capture: OK };

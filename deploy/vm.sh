@@ -88,9 +88,11 @@ case $what in
   prices)
     key=$(envset PRICEIQ_API_KEY)
     if [ ! -f "$DB" ]; then echo "db=none cards=0 key=$key"; exit 0; fi
-    cards=$(cd "$HOME/$APP" && node - "$DB" <<'JS'
-const D = require(process.cwd() + "/node_modules/better-sqlite3");
-const db = new D(process.argv[2], { readonly: true, fileMustExist: true });
+    cards=$(cd "$HOME/$APP" && node --no-warnings - "$DB" <<'JS'
+const fs = require("fs");
+const { DatabaseSync } = require("node:sqlite");
+if (!fs.existsSync(process.argv[2])) throw new Error(`missing database: ${process.argv[2]}`);
+const db = new DatabaseSync(process.argv[2], { readOnly: true });
 const t = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'rate_cards'").get();
 console.log(t ? db.prepare("SELECT COUNT(*) n FROM rate_cards WHERE active = 1").get().n : 0);
 JS
@@ -104,17 +106,21 @@ JS
     mkdir -p "$HOME/$BACKUPS"
     out="$HOME/$BACKUPS/$name"
     [ ! -e "$out" ] || { echo "$out is already there" >&2; exit 1; }
-    cd "$HOME/$APP" && node - "$DB" "$out" <<'JS'
-const D = require(process.cwd() + "/node_modules/better-sqlite3");
+    cd "$HOME/$APP" && node --no-warnings - "$DB" "$out" <<'JS'
+const fs = require("fs");
+const { DatabaseSync, backup } = require("node:sqlite");
 const [from, to] = process.argv.slice(2);
-new D(from, { readonly: true, fileMustExist: true })
-  .backup(to)
+if (!fs.existsSync(from)) throw new Error(`missing database: ${from}`);
+const src = new DatabaseSync(from, { readOnly: true });
+Promise.resolve(backup(src, to))
   .then(() => {
-    const b = new D(to, { readonly: true, fileMustExist: true });
-    const ok = b.pragma("quick_check", { simple: true });
+    src.close();
+    const b = new DatabaseSync(to, { readOnly: true });
+    const row = b.prepare("PRAGMA quick_check").get();
+    const ok = row && (row.quick_check ?? Object.values(row)[0]);
     b.close();
     if (ok !== "ok") throw new Error(`the copy fails quick_check: ${ok}`);
-    console.log(`${to} ${require("fs").statSync(to).size}`);
+    console.log(`${to} ${fs.statSync(to).size}`);
   })
   .catch((e) => {
     console.error(e.message);
@@ -124,9 +130,11 @@ JS
     ;;
   sentences)
     [ -f "$DB" ] || { echo "db=none"; exit 0; }
-    cd "$HOME/$APP" && node - "$DB" <<'JS'
-const D = require(process.cwd() + "/node_modules/better-sqlite3");
-const db = new D(process.argv[2], { readonly: true, fileMustExist: true });
+    cd "$HOME/$APP" && node --no-warnings - "$DB" <<'JS'
+const fs = require("fs");
+const { DatabaseSync } = require("node:sqlite");
+if (!fs.existsSync(process.argv[2])) throw new Error(`missing database: ${process.argv[2]}`);
+const db = new DatabaseSync(process.argv[2], { readOnly: true });
 // RETIRED SENTENCES (deploy/release.test.ts checks this list against lib/server/seed.ts)
 const RETIRED = [
   "No market price yet — enter a quote.",

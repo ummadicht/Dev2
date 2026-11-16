@@ -85,7 +85,7 @@ const partner = who((db().prepare(`SELECT id FROM users WHERE username = 'partne
 {
   const { uploadRateCard } = await import("./catalog.ts");
   const { DEFECT_DEDUCTIONS } = await import("../domain/ratecard.ts");
-  uploadRateCard(partner, {
+  await uploadRateCard(partner, {
     label: "Week 43 (review)",
     effectiveFrom: "2026-10-19",
     quoteValidityDays: 3,
@@ -110,12 +110,12 @@ const joinWith = (code: string, device: Record<string, unknown>, appVersion: str
   sessions.joinByCode({ code, installId: `install-${Math.random().toString(36).slice(2, 12)}`, appVersion, device }, "127.0.0.1");
 async function runTests(ticket: string, sessionId: string) {
   const at = new Date().toISOString();
-  sessions.deviceResults(ticket, { results: DEFAULT_PLAN.filter((p) => p.id !== "battery_health").map((p) => ({ testId: p.id, outcome: "pass", at, detail: null })) });
-  sessions.deviceComplete(ticket);
+  await sessions.deviceResults(ticket, { results: DEFAULT_PLAN.filter((p) => p.id !== "battery_health").map((p) => ({ testId: p.id, outcome: "pass", at, detail: null })) });
+  await sessions.deviceComplete(ticket);
   await sessions.applyTestSession(adv, sessionId).catch(() => undefined);
 }
-const customerText = (caseId: string) => {
-  const a = cases.deviceAnswer(caseId);
+const customerText = async (caseId: string) => {
+  const a = await cases.deviceAnswer(caseId);
   return a && !a.ready ? a.text : null;
 };
 const stored = (caseId: string) => {
@@ -130,129 +130,129 @@ const modelFlags = (c: { camera?: { flags: string[] } | null }) => (c.camera?.fl
 
 test("review 0.9.4 (brand-only): a bare \"Samsung\" TAC, GradeIQ off, a native SM-S918B 256 GB — the S23 Ultra, measured, priced; no 'not on SwapUp's list'", async () => {
   assert.equal(TACS["35004426"], "Samsung");
-  const c = fresh();
+  const c = await fresh();
   const v = await cases.updateCase(adv, c.id, { imei: imeiOnTac("35004426") });
   assert.equal(v.device, null);
   assert.deepEqual(v.imeiWarnings, [IMEI_NAMES_NO_MODEL]);
-  assert.notEqual(customerText(c.id), CANT_PRICE);
-  const s = sessions.createTestSession(adv, { caseId: c.id });
-  const j = joinWith(s.session.code, samsung("SM-S918B", 256e9), "0.9.3");
+  assert.notEqual(await customerText(c.id), CANT_PRICE);
+  const s = await sessions.createTestSession(adv, { caseId: c.id });
+  const j = await joinWith(s.session.code, samsung("SM-S918B", 256e9), "0.9.3");
   assert.deepEqual([j.session.identity.match, j.session.identity.modelId], ["exact", "galaxy-s23-ultra"], "the phone's own code");
   await runTests(`Ticket ${j.ticket}`, s.session.id);
-  const a = cases.getCase(adv, c.id);
+  const a = await cases.getCase(adv, c.id);
   assert.deepEqual([a.device?.modelId, a.device?.variant, a.variantSource, a.modelSource], ["galaxy-s23-ultra", "256GB", "measured", "phone"]);
   assert.equal(a.offer?.swap.tradeIn, 34800, "priced as base 4647c0b priced it");
   assert.deepEqual(modelFlags(a), []);
   assert.deepEqual(a.imeiWarnings, []);
-  assert.notEqual(customerText(c.id), CANT_PRICE);
+  assert.notEqual(await customerText(c.id), CANT_PRICE);
 });
 
 test("review 0.9.4 (brand-only): GradeIQ's own TAC fallback {Samsung, Samsung, source tac} is not GSMA — the same; a phone code set first then that IMEI: no false warnings", async () => {
   const imei = imeiOnTac("35004426");
   infos.set(imei, { brand: "Samsung", model: "Samsung", modelNumber: null, blacklist: "unknown", source: "tac" });
-  const c = fresh();
+  const c = await fresh();
   const v = await withGiq(() => cases.updateCase(adv, c.id, { imei }));
   assert.deepEqual([v.device, v.imeiWarnings], [null, [IMEI_NAMES_NO_MODEL]]);
   assert.equal(stored(c.id).modelKind, "none");
-  const s = sessions.createTestSession(adv, { caseId: c.id });
-  const j = joinWith(s.session.code, samsung("SM-S918B", 256e9), "0.9.3");
+  const s = await sessions.createTestSession(adv, { caseId: c.id });
+  const j = await joinWith(s.session.code, samsung("SM-S918B", 256e9), "0.9.3");
   await runTests(`Ticket ${j.ticket}`, s.session.id);
-  assert.equal(cases.getCase(adv, c.id).offer?.swap.tradeIn, 34800);
+  assert.equal((await cases.getCase(adv, c.id)).offer?.swap.tradeIn, 34800);
 
   // The phone's code set the S23 Ultra first (a case with no IMEI), the bare-"Samsung" IMEI saved after.
-  const d = fresh();
-  const s2 = sessions.createTestSession(adv, { caseId: d.id });
-  const j2 = joinWith(s2.session.code, samsung("SM-S918B", 256e9), "0.9.3");
+  const d = await fresh();
+  const s2 = await sessions.createTestSession(adv, { caseId: d.id });
+  const j2 = await joinWith(s2.session.code, samsung("SM-S918B", 256e9), "0.9.3");
   await runTests(`Ticket ${j2.ticket}`, s2.session.id);
   const w = await cases.updateCase(adv, d.id, { imei: imeiOnTac("35004426") });
   assert.deepEqual([w.device?.modelId, w.imeiWarnings], ["galaxy-s23-ultra", []]);
 });
 
 test("review 0.9.4 (brand-only): an iPhone on a bare \"Apple\" TAC in the browser — 'Your phone' (no picker), never CANT_PRICE; the advisor chooses", async () => {
-  const c = fresh();
+  const c = await fresh();
   const v = await cases.updateCase(adv, c.id, { imei: imeiOn("Apple") });
   assert.deepEqual([v.device, v.imeiWarnings], [null, [IMEI_NAMES_NO_MODEL]]);
-  const s = sessions.createTestSession(adv, { caseId: c.id });
-  const j = joinWith(s.session.code, IPHONE_BROWSER, "web-0.9.3");
+  const s = await sessions.createTestSession(adv, { caseId: c.id });
+  const j = await joinWith(s.session.code, IPHONE_BROWSER, "web-0.9.3");
   assert.deepEqual([j.session.identity.match, j.session.identity.modelId, j.session.identity.label], ["exact", null, "Your phone"]);
   await runTests(`Ticket ${j.ticket}`, s.session.id);
-  assert.notEqual(customerText(c.id), CANT_PRICE);
-  assert.deepEqual(cases.getCase(adv, c.id).offer?.asks.map((a) => a.kind), ["model"], "the advisor's one question");
+  assert.notEqual(await customerText(c.id), CANT_PRICE);
+  assert.deepEqual((await cases.getCase(adv, c.id)).offer?.asks.map((a) => a.kind), ["model"], "the advisor's one question");
 });
 
 /* ─────────────────────────── a TAC name alone never overrules the phone's exact code ─────────────────────────── */
 
 test("review 0.9.4 (TAC-only): a Galaxy A16 5G (SM-A166P) on a plain 'Samsung Galaxy A16' TAC — ambiguous, the phone's code decides, priced", async () => {
-  const c = fresh();
+  const c = await fresh();
   const v = await cases.updateCase(adv, c.id, { imei: imeiOn("Samsung Galaxy A16") });
   assert.deepEqual([v.device, v.imeiWarnings], [null, [IMEI_NAMES_NO_MODEL]], "never 'not on SwapUp's list'");
-  const s = sessions.createTestSession(adv, { caseId: c.id });
-  const j = joinWith(s.session.code, samsung("SM-A166P", 128e9), "0.9.3");
+  const s = await sessions.createTestSession(adv, { caseId: c.id });
+  const j = await joinWith(s.session.code, samsung("SM-A166P", 128e9), "0.9.3");
   assert.deepEqual([j.session.identity.match, j.session.identity.modelId], ["exact", "galaxy-a16-5g"]);
   await runTests(`Ticket ${j.ticket}`, s.session.id);
-  const a = cases.getCase(adv, c.id);
+  const a = await cases.getCase(adv, c.id);
   assert.deepEqual([a.device?.modelId, a.device?.variant], ["galaxy-a16-5g", "128GB"]);
   assert.ok(a.offer?.swap.tradeIn && a.offer.swap.tradeIn > 0, String(a.offer?.swap.tradeIn));
   assert.deepEqual(modelFlags(a), []);
 });
 
 test("review 0.9.4 (TAC-only): an S26+ (SM-S947B) whose TAC says 'Galaxy S26 Pro' — ambiguous until the owner decides; the code prices it", async () => {
-  const c = fresh();
+  const c = await fresh();
   const v = await cases.updateCase(adv, c.id, { imei: imeiOn("Samsung Galaxy S26 Pro") });
   assert.deepEqual([v.device, v.imeiWarnings], [null, [IMEI_NAMES_NO_MODEL]]);
-  const s = sessions.createTestSession(adv, { caseId: c.id });
-  const j = joinWith(s.session.code, samsung("SM-S947B", 256e9), "0.9.3");
+  const s = await sessions.createTestSession(adv, { caseId: c.id });
+  const j = await joinWith(s.session.code, samsung("SM-S947B", 256e9), "0.9.3");
   await runTests(`Ticket ${j.ticket}`, s.session.id);
-  const a = cases.getCase(adv, c.id);
+  const a = await cases.getCase(adv, c.id);
   assert.deepEqual([a.device?.modelId, a.device?.variant], ["galaxy-s26-plus", "256GB"]);
   assert.ok(a.offer?.swap.tradeIn && a.offer.swap.tradeIn > 0);
-  assert.notEqual(customerText(c.id), CANT_PRICE);
+  assert.notEqual(await customerText(c.id), CANT_PRICE);
 });
 
 test("review 0.9.4 (TAC-only): a type-code name of a phone SwapUp doesn't list never overrules an EXACT code — the code is used and flagged; GSMA naming it does overrule (the owner's rule)", async () => {
   // The offline list alone: the phone's maker code wins.
-  const c = fresh();
+  const c = await fresh();
   await cases.updateCase(adv, c.id, { imei: imeiOn("Samsung Galaxy S10") });
-  const s = sessions.createTestSession(adv, { caseId: c.id });
-  const j = joinWith(s.session.code, samsung("SM-S918B", 256e9), "0.9.3");
+  const s = await sessions.createTestSession(adv, { caseId: c.id });
+  const j = await joinWith(s.session.code, samsung("SM-S918B", 256e9), "0.9.3");
   assert.deepEqual([j.session.identity.match, j.session.identity.modelId], ["exact", "galaxy-s23-ultra"], "the phone's own answer, not 'Samsung Galaxy S10, can't be priced'");
   await runTests(`Ticket ${j.ticket}`, s.session.id);
-  const a = cases.getCase(adv, c.id);
+  const a = await cases.getCase(adv, c.id);
   assert.deepEqual([a.device?.modelId, a.modelSource, a.device?.variant], ["galaxy-s23-ultra", "phone", "256GB"]);
   assert.deepEqual(modelFlags(a), ["Model: the IMEI's type code says Samsung Galaxy S10, not on SwapUp's list; the phone's code says Samsung Galaxy S23 Ultra — the code is used."]);
   assert.deepEqual(a.imeiWarnings, ["The IMEI says Samsung Galaxy S10, which isn't on SwapUp's list; the case has Samsung Galaxy S23 Ultra — check Settings › About phone."]);
   assert.equal(a.offer?.swap.tradeIn, 34800);
   // An iPhone in the browser has no code: the type code's name stands — exact, no model, CANT_PRICE.
-  const i = fresh();
+  const i = await fresh();
   await cases.updateCase(adv, i.id, { imei: imeiOn("Apple Iphone 13 Mini") });
-  const si = sessions.createTestSession(adv, { caseId: i.id });
-  const ji = joinWith(si.session.code, IPHONE_BROWSER, "web-0.9.3");
+  const si = await sessions.createTestSession(adv, { caseId: i.id });
+  const ji = await joinWith(si.session.code, IPHONE_BROWSER, "web-0.9.3");
   assert.deepEqual([ji.session.identity.match, ji.session.identity.modelId, ji.session.identity.label], ["exact", null, "Apple iPhone 13 Mini"]);
 
   // GSMA (Phonecheck) named the phone: it decides, over the code.
   const imei = imeiOn("Samsung Galaxy S10");
   infos.set(imei, { brand: "Samsung", model: "Galaxy S10", modelNumber: null, blacklist: "clean", source: "gsma" });
-  const d = fresh();
+  const d = await fresh();
   await withGiq(() => cases.updateCase(adv, d.id, { imei }));
-  const s2 = sessions.createTestSession(adv, { caseId: d.id });
-  const j2 = joinWith(s2.session.code, samsung("SM-S918B", 256e9), "0.9.3");
+  const s2 = await sessions.createTestSession(adv, { caseId: d.id });
+  const j2 = await joinWith(s2.session.code, samsung("SM-S918B", 256e9), "0.9.3");
   assert.deepEqual([j2.session.identity.match, j2.session.identity.modelId, j2.session.identity.label], ["exact", null, "Samsung Galaxy S10"]);
   await runTests(`Ticket ${j2.ticket}`, s2.session.id);
-  const b = cases.getCase(adv, d.id);
+  const b = await cases.getCase(adv, d.id);
   assert.equal(b.device, null);
-  assert.equal(customerText(d.id), CANT_PRICE);
+  assert.equal(await customerText(d.id), CANT_PRICE);
   assert.deepEqual(modelFlags(b), ["Model: phone code says Samsung Galaxy S23 Ultra; the IMEI says Samsung Galaxy S10, not on SwapUp's list — not used."]);
 });
 
 /* ─────────────────────────── a disagreeing code never settles the IMEI model's storage ─────────────────────────── */
 
 test("review 0.9.4 (storage): an S23 Ultra IMEI and an S23+ (SM-S916B) measuring 256 GB — a size the Ultra has too: the storage is NOT settled from that phone", async () => {
-  const c = fresh();
+  const c = await fresh();
   await cases.updateCase(adv, c.id, { imei: imeiOn("Samsung Galaxy S23 Ultra") });
-  const s = sessions.createTestSession(adv, { caseId: c.id });
-  const j = joinWith(s.session.code, samsung("SM-S916B", 256e9), "0.9.3");
+  const s = await sessions.createTestSession(adv, { caseId: c.id });
+  const j = await joinWith(s.session.code, samsung("SM-S916B", 256e9), "0.9.3");
   await runTests(`Ticket ${j.ticket}`, s.session.id);
-  const a = cases.getCase(adv, c.id);
+  const a = await cases.getCase(adv, c.id);
   assert.deepEqual([a.device?.modelId, a.modelSource], ["galaxy-s23-ultra", "imei"]);
   assert.deepEqual([a.device?.variant, a.variantSource, a.offer?.swap.tradeIn], [null, null, null], "the advisor settles it — never an S23 Ultra 256GB price from an S23+'s reading");
   assert.deepEqual(modelFlags(a), ["Model: phone code says Samsung Galaxy S23+; the IMEI says Samsung Galaxy S23 Ultra — check Settings › About phone."]);
@@ -262,58 +262,58 @@ test("review 0.9.4 (storage): an S23 Ultra IMEI and an S23+ (SM-S916B) measuring
 
 test("review 0.9.4 (no picker): an iPhone in Safari on a case with an IMEI and the advisor's model — told the store's model, exact; whether the IMEI names nothing, disagrees, or the model is Phonecheck's", async () => {
   // (A) The IMEI names no model; the advisor chose the iPhone 13, as the case told them to.
-  const a = fresh();
+  const a = await fresh();
   const va = await cases.updateCase(adv, a.id, { imei: "352099001761481" });
   assert.deepEqual(va.imeiWarnings, [IMEI_NAMES_NO_MODEL]);
   await cases.updateCase(adv, a.id, { modelId: "iphone-13" });
-  const sa = sessions.createTestSession(adv, { caseId: a.id });
-  const ja = joinWith(sa.session.code, IPHONE_BROWSER, "web-0.9.3");
+  const sa = await sessions.createTestSession(adv, { caseId: a.id });
+  const ja = await joinWith(sa.session.code, IPHONE_BROWSER, "web-0.9.3");
   assert.deepEqual([ja.session.identity.match, ja.session.identity.modelId, ja.session.identity.label], ["exact", "iphone-13", "Apple iPhone 13"]);
   assert.equal(ja.session.identity.reason, "The store has this phone as the iPhone 13.");
   // (A2) The advisor's model and a listed IMEI model disagree: the advisor's stands (a warning says so), told as the store's.
-  const b = fresh();
+  const b = await fresh();
   await cases.updateCase(adv, b.id, { modelId: "iphone-13", variant: "128GB" });
   const vb = await cases.updateCase(adv, b.id, { imei: imeiOn("Apple Iphone 17 Pro Max") });
   assert.deepEqual([vb.device?.modelId, vb.imeiWarnings], ["iphone-13", ["The IMEI says Apple iPhone 17 Pro Max; the case has Apple iPhone 13 — check Settings › About phone."]]);
-  const jb = joinWith(sessions.createTestSession(adv, { caseId: b.id }).session.code, IPHONE_BROWSER, "web-0.9.3");
+  const jb = await joinWith((await sessions.createTestSession(adv, { caseId: b.id })).session.code, IPHONE_BROWSER, "web-0.9.3");
   assert.deepEqual([jb.session.identity.match, jb.session.identity.modelId, jb.session.identity.variant], ["exact", "iphone-13", "128GB"]);
   // (A3) The model came from a Phonecheck report.
-  const p = fresh();
+  const p = await fresh();
   await cases.updateCase(adv, p.id, { modelId: "iphone-13" }, { modelSource: "phonecheck" });
   await cases.updateCase(adv, p.id, { imei: "352099001761499" });
-  assert.equal(cases.getCase(adv, p.id).modelSource, "phonecheck");
-  const jp = joinWith(sessions.createTestSession(adv, { caseId: p.id }).session.code, IPHONE_BROWSER, "web-0.9.3");
+  assert.equal((await cases.getCase(adv, p.id)).modelSource, "phonecheck");
+  const jp = await joinWith((await sessions.createTestSession(adv, { caseId: p.id })).session.code, IPHONE_BROWSER, "web-0.9.3");
   assert.deepEqual([jp.session.identity.match, jp.session.identity.modelId], ["exact", "iphone-13"]);
   // No IMEI on the case: exactly as before — the phone's own answer (the picker)…
-  const n = fresh();
+  const n = await fresh();
   await cases.updateCase(adv, n.id, { modelId: "iphone-13" });
-  const sn = sessions.createTestSession(adv, { caseId: n.id });
-  const jn = joinWith(sn.session.code, IPHONE_BROWSER, "web-0.9.3");
+  const sn = await sessions.createTestSession(adv, { caseId: n.id });
+  const jn = await joinWith(sn.session.code, IPHONE_BROWSER, "web-0.9.3");
   assert.equal(jn.session.identity.match, "none");
   // …and a pick of another model than the case's is said at Apply, never dropped without a word.
-  sessions.deviceDeclare(`Ticket ${jn.ticket}`, { identityConfirmed: null, picked: { modelId: "iphone-15-pro", variant: null } });
+  await sessions.deviceDeclare(`Ticket ${jn.ticket}`, { identityConfirmed: null, picked: { modelId: "iphone-15-pro", variant: null } });
   await runTests(`Ticket ${jn.ticket}`, sn.session.id);
-  const an = cases.getCase(adv, n.id);
+  const an = await cases.getCase(adv, n.id);
   assert.equal(an.device?.modelId, "iphone-13");
   assert.ok(modelFlags(an).includes("Model: customer picked Apple iPhone 15 Pro; the case has Apple iPhone 13 — the pick is not used."), modelFlags(an).join(" | "));
 });
 
 test("review 0.9.4 (no picker): a family code (SM-S918U) beside the store's own model — told the store's model; Apply never lets the unconfirmed family match overwrite it (flagged)", async () => {
   // The family match agrees with the store's model: exact, no "Is this your phone?".
-  const c = fresh();
+  const c = await fresh();
   await cases.updateCase(adv, c.id, { modelId: "galaxy-s23-ultra" });
   await cases.updateCase(adv, c.id, { imei: "352099001761507" });
-  const j = joinWith(sessions.createTestSession(adv, { caseId: c.id }).session.code, samsung("SM-S918U", 256e9), "0.9.3");
+  const j = await joinWith((await sessions.createTestSession(adv, { caseId: c.id })).session.code, samsung("SM-S918U", 256e9), "0.9.3");
   assert.deepEqual([j.session.identity.match, j.session.identity.modelId], ["exact", "galaxy-s23-ultra"]);
   // It names another model than the store's: the store's is told, and kept at Apply.
-  const d = fresh();
+  const d = await fresh();
   await cases.updateCase(adv, d.id, { modelId: "galaxy-s23-plus" });
   await cases.updateCase(adv, d.id, { imei: "352099001761515" });
-  const s2 = sessions.createTestSession(adv, { caseId: d.id });
-  const j2 = joinWith(s2.session.code, samsung("SM-S918U", 256e9), "0.9.3");
+  const s2 = await sessions.createTestSession(adv, { caseId: d.id });
+  const j2 = await joinWith(s2.session.code, samsung("SM-S918U", 256e9), "0.9.3");
   assert.deepEqual([j2.session.identity.match, j2.session.identity.modelId], ["exact", "galaxy-s23-plus"]);
   await runTests(`Ticket ${j2.ticket}`, s2.session.id);
-  const a = cases.getCase(adv, d.id);
+  const a = await cases.getCase(adv, d.id);
   assert.deepEqual([a.device?.modelId, a.modelSource], ["galaxy-s23-plus", "advisor"]);
   assert.ok(modelFlags(a).includes("Model: phone code looks like Samsung Galaxy S23 Ultra; the case has Samsung Galaxy S23+ — check Settings › About phone."), modelFlags(a).join(" | "));
 });
@@ -324,7 +324,7 @@ test("review 0.9.4 (GSMA): TAC 'Apple Iphone 15 Pro', GSMA says the 15 Pro Max �
   assert.equal(TACS["35976028"], "Apple Iphone 15 Pro");
   const imei = imeiOnTac("35976028");
   infos.set(imei, { brand: "Apple", model: "Apple iPhone 15 Pro Max (A3106)", modelNumber: null, blacklist: "clean", source: "gsma" });
-  const c = fresh();
+  const c = await fresh();
   const v = await withGiq(() => cases.updateCase(adv, c.id, { imei }));
   assert.deepEqual([v.device?.modelId, v.modelSource], ["iphone-15-pro-max", "imei"]);
   assert.deepEqual([v.imeiLookup?.brand, v.imeiLookup?.model, v.imeiLookup?.source], ["Apple", "iPhone 15 Pro Max", "gsma"]);
@@ -339,12 +339,12 @@ test("review 0.9.4 (GSMA): TAC 'Apple Iphone 15 Pro', GSMA says the 15 Pro Max �
   // GSMA names a phone NOT on the list where the type code names one that is: neither is used, both are said.
   const mini = imeiOn("Apple Iphone 13");
   infos.set(mini, { brand: "Apple", model: "Apple iPhone 13 mini (A2628)", modelNumber: null, blacklist: "clean", source: "gsma" });
-  const d = fresh();
+  const d = await fresh();
   const w = await withGiq(() => cases.updateCase(adv, d.id, { imei: mini }));
   assert.equal(w.device, null);
   assert.deepEqual(w.imeiWarnings, ["The IMEI's type code says Apple iPhone 13; GSMA says Apple iPhone 13 mini — check Settings › About phone."]);
   assert.equal(stored(d.id).modelKind, "ambiguous");
-  assert.equal(joinWith(sessions.createTestSession(adv, { caseId: d.id }).session.code, IPHONE_BROWSER, "web-0.9.3").session.identity.label, "Your phone");
+  assert.equal((await joinWith((await sessions.createTestSession(adv, { caseId: d.id })).session.code, IPHONE_BROWSER, "web-0.9.3")).session.identity.label, "Your phone");
 });
 
 test("review 0.9.4 (stub): GradeIQ's made-up seed answer (source 'stub', a TAC not on the list) names nothing — no model, no name on the IMEI card, never 'GSMA'", async () => {
@@ -352,7 +352,7 @@ test("review 0.9.4 (stub): GradeIQ's made-up seed answer (source 'stub', a TAC n
     assert.equal(TACS[tac], undefined, `${tac} isn't on the offline list`);
     const imei = imeiOnTac(tac);
     infos.set(imei, { brand, model, modelNumber: null, blacklist: "unknown", source: "stub" });
-    const c = fresh();
+    const c = await fresh();
     const v = await withGiq(() => cases.updateCase(adv, c.id, { imei }));
     assert.equal(v.device, null, tac);
     assert.deepEqual([v.imeiLookup?.brand, v.imeiLookup?.model, v.imeiLookup?.source], [null, null, "stub"], tac);
@@ -365,14 +365,14 @@ test("review 0.9.4 (stub): GradeIQ's made-up seed answer (source 'stub', a TAC n
 
 test("review 0.9.4 (kept answers): an answer kept by 0.9.3 (no tacName, a stub name) is read with today's rules — the offline list's name, never the stub's", async () => {
   // 0.9.3 kept {brand, model} as GradeIQ answered; a stub on a TAC the offline list names.
-  const c = fresh();
+  const c = await fresh();
   const imei = imeiOn("Apple Iphone 13");
   db()
     .prepare(`UPDATE cases SET imei = ?, imei_lookup = ? WHERE id = ?`)
     .run(imei, JSON.stringify([{ imei, brand: "Samsung", model: "Galaxy S22 Ultra", modelNumber: null, blacklist: "unknown", source: "stub", at: new Date().toISOString(), modelId: null, modelWhy: "" }]), c.id);
-  const v = cases.getCase(adv, c.id);
+  const v = await cases.getCase(adv, c.id);
   assert.deepEqual(v.imeiWarnings, [], "no model on the case, and the list's name is a listed one: nothing to warn");
-  const j = joinWith(sessions.createTestSession(adv, { caseId: c.id }).session.code, IPHONE_BROWSER, "web-0.9.3");
+  const j = await joinWith((await sessions.createTestSession(adv, { caseId: c.id })).session.code, IPHONE_BROWSER, "web-0.9.3");
   assert.deepEqual([j.session.identity.modelId, j.session.identity.match], ["iphone-13", "exact"], "the offline list's iPhone 13, never the stub's S22 Ultra");
   assert.equal(imeiUnlistedSentence("X"), "The IMEI says X — not on SwapUp's list, so it can't be priced here yet.");
 });

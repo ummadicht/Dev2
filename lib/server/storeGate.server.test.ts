@@ -156,8 +156,8 @@ test("on: the desk's cookie is never refused — no header, any role", async () 
 
 test("on: SwapUp Check (Ticket) and the store tablet's Device token are never refused", async () => {
   process.env.SWAPUP_STORE_MIN_VERSION = "0.9.3";
-  const created = sessions.createTestSession(advisor, { customerName: "Asha Rao", customerPhone: "9876543210" });
-  const joined = sessions.joinByCode(
+  const created = await sessions.createTestSession(advisor, { customerName: "Asha Rao", customerPhone: "9876543210" });
+  const joined = await sessions.joinByCode(
     {
       code: created.session.code,
       installId: "install-storegate-1",
@@ -171,7 +171,7 @@ test("on: SwapUp Check (Ticket) and the store tablet's Device token are never re
   assert.notEqual(check.body.status, "closed");
 
   // The tablet still lists its staff and unlocks (Device); the update sentence comes on the first staff call.
-  const { deviceToken } = createStoreDevice(manager, { name: "Counter tablet" });
+  const { deviceToken } = await createStoreDevice(manager, { name: "Counter tablet" });
   const tablet = await send(() => tabletRoute.GET(new Request("http://x/api/tablet", { headers: { authorization: `Device ${deviceToken}` } })), {});
   assert.equal(tablet.status, 200, JSON.stringify(tablet.body));
 });
@@ -193,8 +193,8 @@ test("on: an old build can still sign in (password, or PIN on the tablet), and i
   assert.equal(caseCount(), before);
 
   // The store tablet on a 0.9.2 build: the PIN unlocks as before; the staff calls after it are refused.
-  setOwnPin(advisor, { password: PASSWORD, pin: "5807" });
-  const { deviceToken } = createStoreDevice(manager, { name: "Old tablet" });
+  await setOwnPin(advisor, { password: PASSWORD, pin: "5807" });
+  const { deviceToken } = await createStoreDevice(manager, { name: "Old tablet" });
   const unlocked = await send(() => unlockRoute.POST(post("http://x/api/tablet/unlock", `Device ${deviceToken}`, { userId: advisor.id, pin: "5807" })), {});
   assert.equal(unlocked.status, 200, JSON.stringify(unlocked.body));
   assert.deepEqual(await me({ authorization: `Bearer ${unlocked.body.token as string}` }), { status: 426, body: { error: UPDATE_STORE } });

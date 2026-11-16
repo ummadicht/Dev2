@@ -13,7 +13,7 @@ import { noPriceWhy } from "@/lib/domain/offer";
 
 /** SourceBadge for a quote: where its price came from. */
 export function QuoteSource({ quote }: { quote: Pick<PartnerQuote, "source"> | null | undefined }) {
-  if (!quote) return null;
+  if (!quote?.source) return null;
   return <SourceBadge kind={quote.source.kind} label={quote.source.label} />;
 }
 
@@ -24,7 +24,7 @@ function Trace({ quote }: { quote: PartnerQuote }) {
       <div className="section-title">How it adds up</div>
       <table className="w-full text-[14px] mt-1">
         <tbody>
-          {quote.lines.map((l, i) => (
+          {(quote.lines ?? []).map((l, i) => (
             <tr key={`${l.label}-${i}`} className="border-t border-line first:border-t-0">
               <td className="py-1.5 pr-3 text-ink-2">
                 {l.label}
@@ -49,8 +49,8 @@ function Trace({ quote }: { quote: PartnerQuote }) {
         </tbody>
       </table>
       <div className="hint">
-        {quoteSourceLabel(quote.source)}
-        {quote.source.effectiveFrom && !retiredSource(quote.source.kind) ? ` · effective ${fmtWhen(quote.source.effectiveFrom, "date")}` : ""}
+        {quote.source ? quoteSourceLabel(quote.source) : "Quoted"}
+        {quote.source?.effectiveFrom && !retiredSource(quote.source.kind) ? ` · effective ${fmtWhen(quote.source.effectiveFrom, "date")}` : ""}
         {quote.quotedAt ? ` · quoted ${fmtWhen(quote.quotedAt)}` : ""}
         {quote.partnerRef ? ` · ref ${quote.partnerRef}` : ""}
         {quote.priceiq?.deductions ? ` · defect % from ${quote.priceiq.deductions}` : ""}
@@ -109,7 +109,7 @@ export function StepTradeIn({ ops, isPartner = false, isManager = false, bands =
   else if (view.quoteExpired) {
     tone = "warn";
     line = `Expired ${fmtWhen(q.validUntil)} — re-quote first.`;
-  } else if (q.source.kind === "priceiq") {
+  } else if (q.source?.kind === "priceiq") {
     // The answer's one line ("Refurbished market price ₹51,399 (Good) − 2% − 2 defects · PriceIQ 2026-W35"), and its
     // note when the market data is over 14 days old or PriceIQ didn't answer (the last good answer).
     const note = view.offer?.swap.tradeInNote ?? null;
@@ -119,10 +119,10 @@ export function StepTradeIn({ ops, isPartner = false, isManager = false, bands =
 
   const up = view.upgrade;
   // A PriceIQ trade-in starts from the store's SELL price: its trace is staff-only (the server sends the partner one line).
-  const storeOnlyTrace = isPartner && q?.source.kind === "priceiq";
+  const storeOnlyTrace = isPartner && q?.source?.kind === "priceiq";
   const details = (
     <>
-      {storeOnlyTrace ? null : q?.source.kind === "priceiq" ? (
+      {storeOnlyTrace ? null : q?.source?.kind === "priceiq" ? (
         <p className="hint !mt-0">Market price at its grade − markdown − defects.</p>
       ) : view.partner ? (
         <p className="hint !mt-0">{view.partner.why}</p>
@@ -135,7 +135,7 @@ export function StepTradeIn({ ops, isPartner = false, isManager = false, bands =
           <div className="section-title">Worth once repaired</div>
           <div className="text-[18px] font-[720] mt-0.5">{rq?.status === "priced" ? <Money value={rq.amount} /> : <span className="text-muted">—</span>}</div>
           <div className="hint">
-            {rq?.status === "priced" ? `${quoteSourceLabel(rq.source)} · not an offer` : (rq?.reason ?? "Not available.")}
+            {rq?.status === "priced" ? `${rq.source ? quoteSourceLabel(rq.source) : "Quoted"} · not an offer` : (rq?.reason ?? "Not available.")}
           </div>
         </div>
       ) : null}

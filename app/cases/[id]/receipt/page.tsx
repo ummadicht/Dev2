@@ -129,7 +129,7 @@ export default async function ReceiptPage({
   const store = await getStore(v.storeId);
   const org = await getOrg(v.orgId);
   const test = !!org?.demo;
-  const priceiq = v.quote?.source.kind === "priceiq";
+  const priceiq = v.quote?.source?.kind === "priceiq";
   const wePay =
     v.tradeValue !== null
       ? v.tradeValue + (v.premiumValue ?? 0)
@@ -351,7 +351,7 @@ export default async function ReceiptPage({
                   <tr key={p.id} className="border-b border-line last:border-b-0">
                     <td className="py-2.5 px-3">
                       <div className="font-semibold text-ink">
-                        {PLAN_LABELS[p.payment_plan]}
+                        {PLAN_LABELS[p.payment_plan] ?? p.payment_plan}
                         {p.emi_months ? ` (${p.emi_months}M EMI · ${inr(p.emi_monthly_amount)}/mo)` : ""}
                       </div>
                       <div className="num text-[11.5px] text-muted">

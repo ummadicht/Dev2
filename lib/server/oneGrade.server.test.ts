@@ -112,8 +112,8 @@ const CSV = [
   // A row with only its top price, as the week-42 card's iPhone rows are.
   "iphone-14,128GB,27780,,,",
 ].join("\n");
-uploadRateCard(partner, { label: "Week 42 (test)", effectiveFrom: "2026-10-12", quoteValidityDays: 3, csv: `${CSV}\n`, deductions: DEFECT_DEDUCTIONS, activate: true });
-const CARD = activeRateCard(orgPartnerId(adv.orgId))!;
+await uploadRateCard(partner, { label: "Week 42 (test)", effectiveFrom: "2026-10-12", quoteValidityDays: 3, csv: `${CSV}\n`, deductions: DEFECT_DEDUCTIONS, activate: true });
+const CARD = (await activeRateCard(await orgPartnerId(adv.orgId)))!;
 assert.ok(CARD, "the card is active");
 
 let imeiSeq = 0;
@@ -124,8 +124,8 @@ const nextImei = () => {
 
 /** A case the customer's phone tested (every test passed), so the phone has a status to poll. */
 async function testedCase(): Promise<{ id: string; ticket: string }> {
-  const created = sessions.createTestSession(adv, { customerName: "Asha Rao", customerPhone: "9820012345" });
-  const joined = sessions.joinByCode(
+  const created = await sessions.createTestSession(adv, { customerName: "Asha Rao", customerPhone: "9820012345" });
+  const joined = await sessions.joinByCode(
     {
       code: created.session.code,
       installId: `install-${created.session.id.slice(-10)}`,
@@ -136,8 +136,8 @@ async function testedCase(): Promise<{ id: string; ticket: string }> {
   );
   const ticket = `Ticket ${joined.ticket}`;
   const at = new Date().toISOString();
-  sessions.deviceResults(ticket, { results: DEFAULT_PLAN.filter((p) => p.id !== "battery_health").map((p) => ({ testId: p.id, outcome: "pass", at, detail: null })) });
-  sessions.deviceComplete(ticket);
+  await sessions.deviceResults(ticket, { results: DEFAULT_PLAN.filter((p) => p.id !== "battery_health").map((p) => ({ testId: p.id, outcome: "pass", at, detail: null })) });
+  await sessions.deviceComplete(ticket);
   await sessions.applyTestSession(adv, created.session.id).catch(() => undefined);
   return { id: created.session.caseId, ticket };
 }
@@ -148,7 +148,7 @@ const n = (s: string) => Number(s.replace(/,/g, ""));
 let checked = 0;
 
 /** Everything a screen shows for this case agrees with ONE grade and a fresh price. */
-function holds(v: View, ticket: string | null, where: string) {
+async function holds(v: View, ticket: string | null, where: string) {
   checked += 1;
   const c = v.condition as Cond;
   assert.ok(c, `${where}: a condition`);
@@ -159,7 +159,7 @@ function holds(v: View, ticket: string | null, where: string) {
   // 1. One grade: the answer's grade line, its market line, the report.
   assert.equal(a.grade?.word, grade, `${where}: the grade line is the SwapUp grade`);
   assert.match(a.lines[0].text, new RegExp(`^Current grade ${letter}\\b`), where);
-  const report = gr.gradingReportFor(adv, v.id).issued?.body.grade ?? null;
+  const report = (await gr.gradingReportFor(adv, v.id)).issued?.body.grade ?? null;
   if (report?.status === "graded") assert.equal(report.grade, grade, `${where}: the report's grade`);
   if (report?.afterRepair) assert.equal(report.afterRepair, grade, `${where}: the report's after-repair grade`);
 
@@ -204,7 +204,7 @@ function holds(v: View, ticket: string | null, where: string) {
 
   // The customer's phone prints the desk's lines, word for word.
   if (!ticket) return;
-  const phone = sessions.deviceStatus(ticket).answer;
+  const phone = (await sessions.deviceStatus(ticket)).answer;
   assert.ok(phone?.ready, `${where}: the customer's phone has the answer`);
   if (phone?.ready) assert.deepEqual(phone.lines, a.lines, `${where}: the phone's lines are the desk's`);
 }
@@ -222,7 +222,7 @@ test("Change condition (desk Condition step / SwapUp Store): every screen × bod
   for (const screen of SCREENS)
     for (const body of BODIES) {
       const v = await patch(t.id, { faults: [], condition: { ...start, screen, body } });
-      holds(v, t.ticket, `${screen}/${body}`);
+      await holds(v, t.ticket, `${screen}/${body}`);
     }
   for (const over of [
     { issues: ["liquid"] },
@@ -234,7 +234,7 @@ test("Change condition (desk Condition step / SwapUp Store): every screen × bod
     { body: "back_cracked", accessories: { charger: false, box: true, bill: true }, age: "3to11m" },
   ] as const) {
     const v = await patch(t.id, { faults: [], condition: { ...start, ...over } });
-    holds(v, t.ticket, JSON.stringify(over));
+    await holds(v, t.ticket, JSON.stringify(over));
   }
 });
 
@@ -244,12 +244,12 @@ test("there and back: A → B → A gives A's grade and price again — never a 
   const A = { ...base, screen: "flawless", body: "scuffed", accessories: ALL_THERE, age: "lt3m" };
   const B = { ...base, screen: "cracked", body: "back_cracked", issues: ["liquid"], accessories: ALL_THERE, age: "gt11m" };
   const a1 = await patch(t.id, { faults: [], condition: A });
-  holds(a1, t.ticket, "A");
+  await holds(a1, t.ticket, "A");
   const b = await patch(t.id, { faults: [], condition: B });
-  holds(b, t.ticket, "B");
+  await holds(b, t.ticket, "B");
   assert.notEqual(b.quote?.amount, a1.quote?.amount);
   const a2 = await patch(t.id, { faults: [], condition: A });
-  holds(a2, t.ticket, "A again");
+  await holds(a2, t.ticket, "A again");
   assert.equal(a2.quote?.amount, a1.quote?.amount);
   assert.deepEqual(a2.offer!.answer.lines, a1.offer!.answer.lines);
 });
@@ -257,7 +257,7 @@ test("there and back: A → B → A gives A's grade and price again — never a 
 test("Check the phone taps (desk and SwapUp Store): each tap re-grades and re-prices — cracked back reads grade A, priced at A", async () => {
   const t = await testedCase();
   const v0 = await patch(t.id, { modelId: MODEL, variant: SIZES[0], imei: nextImei(), upgradeDeviceId: S26U_256 });
-  holds(v0, t.ticket, "tested, every test passed");
+  await holds(v0, t.ticket, "tested, every test passed");
   const taps: [string, string][] = [
     ["body", "back_cracked"],
     ["screen", "cracked"],
@@ -274,7 +274,7 @@ test("Check the phone taps (desk and SwapUp Store): each tap re-grades and re-pr
   let prev = v0.quote?.amount ?? null;
   for (const [row, value] of taps) {
     const v = await tap(t.id, row, value);
-    holds(v, t.ticket, `tap ${row}=${value}`);
+    await holds(v, t.ticket, `tap ${row}=${value}`);
     if (row === "body" && value === "back_cracked") {
       assert.deepEqual([v.offer!.answer.lines[0].text, v.offer!.answer.lines[0].note], ["Current grade A", "back glass cracked"]);
       assert.match(v.offer!.answer.lines[1].text, /^Market price for grade A ₹/);
@@ -286,19 +286,19 @@ test("Check the phone taps (desk and SwapUp Store): each tap re-grades and re-pr
 
 test("storage: changing the size re-prices at the same grade; an unknown size shows each size's fresh price, and a condition change re-prices the chips", async () => {
   // A case typed at the desk (no tested phone): the size is only ever what staff choose, so it can be unknown.
-  const t = { id: cases.createCase(adv, { customerName: "Asha Rao", customerPhone: "9820012345" }).id, ticket: null };
+  const t = { id: (await cases.createCase(adv, { customerName: "Asha Rao", customerPhone: "9820012345" })).id, ticket: null };
   await patch(t.id, { modelId: MODEL, variant: SIZES[0], imei: nextImei() });
   const cracked = { powersOn: true, calls: true, screen: "cracked", body: "dented", issues: [], accessories: ALL_THERE, age: "lt3m" };
-  holds(await patch(t.id, { faults: [], condition: cracked }), t.ticket, `${SIZES[0]}, cracked/dented`);
-  for (const size of SIZES.slice(1)) holds(await patch(t.id, { variant: size }), t.ticket, `${size}, cracked/dented`);
+  await holds(await patch(t.id, { faults: [], condition: cracked }), t.ticket, `${SIZES[0]}, cracked/dented`);
+  for (const size of SIZES.slice(1)) await holds(await patch(t.id, { variant: size }), t.ticket, `${size}, cracked/dented`);
   const unknown = await patch(t.id, { variant: null });
-  holds(unknown, t.ticket, "size unknown, cracked/dented");
-  holds(await patch(t.id, { faults: [], condition: { ...cracked, screen: "flawless", body: "flawless" } }), t.ticket, "size unknown, like new");
-  holds(await patch(t.id, { variant: SIZES[SIZES.length - 1] }), t.ticket, "a size chosen again");
+  await holds(unknown, t.ticket, "size unknown, cracked/dented");
+  await holds(await patch(t.id, { faults: [], condition: { ...cracked, screen: "flawless", body: "flawless" } }), t.ticket, "size unknown, like new");
+  await holds(await patch(t.id, { variant: SIZES[SIZES.length - 1] }), t.ticket, "a size chosen again");
 });
 
 test("a card row with only its top price (the week-42 iPhones): grade A names A with the working-out; grade B names no grade and staff read why", async () => {
-  const id = cases.createCase(adv, { customerName: "Asha Rao", customerPhone: "9820012345" }).id;
+  const id = (await cases.createCase(adv, { customerName: "Asha Rao", customerPhone: "9820012345" })).id;
   const base = { powersOn: true, calls: true, issues: [], accessories: ALL_THERE, age: "lt3m" };
   const back = await patch(id, { modelId: "iphone-14", variant: "128GB", imei: nextImei(), faults: [], condition: { ...base, screen: "flawless", body: "back_cracked" } });
   assert.equal(back.quote?.source.kind, "partner_ratecard");
@@ -316,13 +316,13 @@ test("a price typed on an older build, on a case still at the counter, is lapsed
   // What a 0.9.0 counter left behind: a typed quote, valid for days yet.
   const typed = { ...v.quote!, source: { kind: "partner_manual", label: "Partner quote" }, amount: 10_000, lines: [{ label: "Partner quote", amount: 10_000 }], validUntil: new Date(Date.now() + 2 * 86_400_000).toISOString() };
   db().prepare(`UPDATE cases SET quote = ? WHERE id = ?`).run(JSON.stringify(typed), t.id);
-  const opened = cases.getCase(adv, t.id);
+  const opened = await cases.getCase(adv, t.id);
   assert.equal(opened.quote?.source.kind, "partner_manual");
   assert.equal(opened.quoteExpired, true, "lapsed: the desk and the store app re-quote it on open");
   assert.ok(opened.lockBlockers.some((b) => /expired|re-quot/i.test(b)), opened.lockBlockers.join(" | "));
   // Opening it re-quotes (the clients' quiet reprice): the card's price, one grade.
   const re = await as(() => call(actionRoute.POST(new Request(`http://x/api/cases/${t.id}/action`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "reprice" }) }), params(t.id))));
-  holds(re, t.ticket, "a typed quote re-asked");
+  await holds(re, t.ticket, "a typed quote re-asked");
   assert.equal(re.quoteExpired, false);
 });
 

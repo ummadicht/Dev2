@@ -94,7 +94,7 @@ const COND = (screen: string, body: string) => ({ powersOn: true, calls: true, s
  * the liquid indicator) — the case SUP-5 is about.
  */
 async function cameraCase(floor: { screen: string; body: string }): Promise<string> {
-  const c = cases.createCase(adv, { customerName: "Camera Floor" });
+  const c = await cases.createCase(adv, { customerName: "Camera Floor" });
   await cases.updateCase(adv, c.id, { modelId: "galaxy-s23-ultra", variant: "256GB", faults: [], condition: COND(floor.screen, floor.body) as never });
   const camera = { ...blankCameraCheck(new Date().toISOString()), state: "ready", by: "Asha K.", final: true, conclusive: true, floor };
   db().prepare(`UPDATE cases SET camera_check = ? WHERE id = ?`).run(JSON.stringify(camera), c.id);
@@ -111,7 +111,7 @@ function written(id: string) {
 
 const SCREEN_SAYS = (tapped: string) => `Camera confirmed the screen "Visible scratches" — "${tapped}" ${REASON_ON_DESK}`;
 /** The grade report as it stands: its disclosures, "DS10: …". */
-const disclosures = (id: string) => (gr.gradingReportFor(adv, id).live?.disclosures ?? []).map((d) => `${d.code}: ${d.text}`);
+const disclosures = async (id: string) => ((await gr.gradingReportFor(adv, id)).live?.disclosures ?? []).map((d) => `${d.code}: ${d.text}`);
 
 /* ─────────────────────────── a real test session, its camera grade stored ─────────────────────────── */
 
@@ -156,8 +156,8 @@ let installs = 0;
  * and the store camera's final grade is stored on the session. Not applied.
  */
 async function testedSession(scratched: boolean, caseId?: string): Promise<{ sessionId: string; caseId: string }> {
-  const created = sessions.createTestSession(adv, caseId ? { caseId } : { customerName: "Camera Floor" });
-  const joined = sessions.joinByCode(
+  const created = await sessions.createTestSession(adv, caseId ? { caseId } : { customerName: "Camera Floor" });
+  const joined = await sessions.joinByCode(
     {
       code: created.session.code,
       installId: `install-camera-${++installs}`,
@@ -168,8 +168,8 @@ async function testedSession(scratched: boolean, caseId?: string): Promise<{ ses
   );
   const ticket = `Ticket ${joined.ticket}`;
   const at = new Date().toISOString();
-  sessions.deviceResults(ticket, { results: DEFAULT_PLAN.filter((p) => p.id !== "battery_health").map((p) => ({ testId: p.id, outcome: "pass", at, detail: null })) });
-  sessions.deviceComplete(ticket);
+  await sessions.deviceResults(ticket, { results: DEFAULT_PLAN.filter((p) => p.id !== "battery_health").map((p) => ({ testId: p.id, outcome: "pass", at, detail: null })) });
+  await sessions.deviceComplete(ticket);
   db().prepare(`UPDATE test_sessions SET gradeiq_state = 'ready', gradeiq_id = ?, gradeiq_snapshot = ? WHERE id = ?`).run(randomUUID(), JSON.stringify(finalGrade(scratched)), created.session.id);
   return { sessionId: created.session.id, caseId: created.session.caseId };
 }
@@ -198,8 +198,8 @@ test("a Screen OK tap better than the camera confirmed: 409 with the camera's se
   assert.equal(r.data.error, 'Camera confirmed the screen "Visible scratches" — "OK" needs a reason, given on the desk\'s What\'s wrong once the answer is open.');
   assert.ok(!namesBrand(r.data.error!), r.data.error);
   assert.deepEqual(written(id), before, "nothing written: no tap, no condition, no audit row");
-  assert.deepEqual(cases.getCase(adv, id).certification, {});
-  assert.equal(cases.getCase(adv, id).condition?.screen, "scratched", "the price stays at what the camera confirmed");
+  assert.deepEqual((await cases.getCase(adv, id)).certification, {});
+  assert.equal((await cases.getCase(adv, id)).condition?.screen, "scratched", "the price stays at what the camera confirmed");
 });
 
 test("the desk's own camera 409 and the tap's say what the camera confirmed in the same words; the tap names its chip", async () => {
@@ -237,7 +237,7 @@ test("\"All fine\" is never refused for what the camera confirmed: on that row i
   assert.deepEqual([r.data.condition?.screen, r.data.condition?.body], ["scratched", "flawless"]);
   const audits = db().prepare(`SELECT detail FROM audit WHERE action = 'case.certify' AND entity_id = ? ORDER BY id`).all(screen) as { detail: string }[];
   assert.deepEqual(audits.map((x) => [JSON.parse(x.detail).row, JSON.parse(x.detail).value, JSON.parse(x.detail).allFine]), [["screen", "scratches", true], ["body", "like_new", true], ["liquid", "cant_see", true]]);
-  assert.ok(!disclosures(screen).some((d) => d.startsWith("DS10")), "no 'camera stands': the row agrees with it");
+  assert.ok(!(await disclosures(screen)).some((d) => d.startsWith("DS10")), "no 'camera stands': the row agrees with it");
 
   // The body (tapped by "All fine" though the card asked only the screen): the camera's chip too.
   const body = await cameraCase({ screen: "flawless", body: "dented" });
@@ -282,7 +282,7 @@ test("once the reason is on record (\"Why it's better\" on the desk), the tap st
   assert.equal(tap.data.certification.screen?.value, "ok");
   assert.equal(tap.data.condition?.screen, "flawless", "the reasoned override is not undone by the tap");
   // The grade report says what happened: the reason (DS4), and no "camera stands" — the phone is priced flawless.
-  const said = disclosures(id);
+  const said = await disclosures(id);
   assert.ok(said.includes("DS4: Recorded better than the camera saw, by " + adv.name + ": Scratches are on the screen guard only"), said.join("\n"));
   assert.ok(!said.some((d) => d.startsWith("DS10")), said.join("\n"));
   // The body the reason didn't cover still stands on the camera.
@@ -298,9 +298,9 @@ test("once the reason is on record (\"Why it's better\" on the desk), the tap st
 test("before Apply — the usual tap: Screen OK against the session's own camera (scratches confirmed) is refused 409, nothing written; the tap it agrees with goes on, and Apply prices what was tapped", async () => {
   const { sessionId, caseId } = await testedSession(true);
   await withCamera(async () => {
-    const card = cases.getCase(adv, caseId).certify;
+    const card = (await cases.getCase(adv, caseId)).certify;
     assert.deepEqual(card?.needed, ["screen", "liquid"], "the sweep didn't check the screen: the card asks it");
-    assert.equal(cases.getCase(adv, caseId).camera, null, "nothing applied yet: no camera record on the case");
+    assert.equal((await cases.getCase(adv, caseId)).camera, null, "nothing applied yet: no camera record on the case");
     const before = written(caseId);
     const r = await certify(caseId, { row: "screen", value: "ok", testSessionId: sessionId });
     assert.equal(r.status, 409, JSON.stringify(r.data).slice(0, 300));
@@ -310,10 +310,10 @@ test("before Apply — the usual tap: Screen OK against the session's own camera
     assert.equal((await certify(caseId, { row: "screen", value: "scratches", testSessionId: sessionId })).status, 200);
     assert.equal((await certify(caseId, { row: "liquid", value: "clean", testSessionId: sessionId })).status, 200);
     await apply(sessionId);
-    const v = cases.getCase(adv, caseId);
+    const v = await cases.getCase(adv, caseId);
     assert.equal(v.camera?.floor.screen, "scratched");
     assert.deepEqual([v.certification.screen?.value, v.condition?.screen], ["scratches", "scratched"], "the row says what is priced");
-    assert.ok(!disclosures(caseId).some((d) => d.startsWith("DS10")));
+    assert.ok(!(await disclosures(caseId)).some((d) => d.startsWith("DS10")));
   });
 });
 
@@ -325,11 +325,11 @@ test("\"All fine\" before Apply, and after a manual Apply (the card still open):
     assert.equal(a.status, 200, a.data.error);
     assert.equal(a.data.certification.screen?.value, "scratches");
     await apply(early.sessionId);
-    assert.equal(cases.getCase(adv, early.caseId).condition?.screen, "scratched");
+    assert.equal((await cases.getCase(adv, early.caseId)).condition?.screen, "scratched");
 
     // "Apply the results so far" first: the card stays open, and "All fine" clears it.
     await apply(late.sessionId);
-    assert.ok(cases.getCase(adv, late.caseId).certify?.needed.includes("screen"));
+    assert.ok((await cases.getCase(adv, late.caseId)).certify?.needed.includes("screen"));
     const b = await certify(late.caseId, { allFine: true, testSessionId: late.sessionId });
     assert.equal(b.status, 200, b.data.error);
     assert.deepEqual([b.data.certification.screen?.value, b.data.certification.liquid?.value, b.data.condition?.screen], ["scratches", "cant_see", "scratched"]);
@@ -339,7 +339,7 @@ test("\"All fine\" before Apply, and after a manual Apply (the card still open):
 test("a re-test's taps stand on the re-test's camera, never an earlier session's", async () => {
   const first = await testedSession(true);
   await withCamera(() => apply(first.sessionId));
-  assert.equal(cases.getCase(adv, first.caseId).condition?.screen, "scratched", "the first camera's finding is on the case");
+  assert.equal((await cases.getCase(adv, first.caseId)).condition?.screen, "scratched", "the first camera's finding is on the case");
   // The re-test: this time the camera found nothing on the glass.
   const again = await testedSession(false, first.caseId);
   await withCamera(async () => {
@@ -347,7 +347,7 @@ test("a re-test's taps stand on the re-test's camera, never an earlier session's
     assert.equal(r.status, 200, r.data.error);
     assert.equal(r.data.condition?.screen, "flawless", "held to the re-test's camera, which confirmed nothing");
     await apply(again.sessionId);
-    const v = cases.getCase(adv, first.caseId);
+    const v = await cases.getCase(adv, first.caseId);
     assert.deepEqual([v.camera?.testSessionId, v.certification.screen?.value, v.condition?.screen], [again.sessionId, "ok", "flawless"]);
   });
 });
@@ -355,7 +355,8 @@ test("a re-test's taps stand on the re-test's camera, never an earlier session's
 test("a reason on record carries over to a re-test: the tap stands before Apply, Apply doesn't floor it back, and the report doesn't say \"camera stands\"", async () => {
   const first = await testedSession(true);
   await withCamera(() => apply(first.sessionId));
-  const saved = await patch(first.caseId, { condition: { ...cases.getCase(adv, first.caseId).condition, screen: "flawless" }, cameraOverride: { reason: "Scratches are on the screen guard only" } });
+  const curCond = (await cases.getCase(adv, first.caseId)).condition;
+  const saved = await patch(first.caseId, { condition: { ...curCond, screen: "flawless" }, cameraOverride: { reason: "Scratches are on the screen guard only" } });
   assert.equal(saved.status, 200, saved.data.error);
   // The re-test's camera sees the same scratches.
   const again = await testedSession(true, first.caseId);
@@ -363,10 +364,10 @@ test("a reason on record carries over to a re-test: the tap stands before Apply,
     const r = await certify(first.caseId, { row: "screen", value: "ok", testSessionId: again.sessionId });
     assert.equal(r.status, 200, r.data.error);
     await apply(again.sessionId);
-    const v = cases.getCase(adv, first.caseId);
+    const v = await cases.getCase(adv, first.caseId);
     assert.equal(v.camera?.floor.screen, "scratched", "the camera's finding is kept on its record");
     assert.deepEqual([v.certification.screen?.value, v.condition?.screen], ["ok", "flawless"], "the reasoned tap is not floored back");
-    const said = disclosures(first.caseId);
+    const said = await disclosures(first.caseId);
     assert.ok(said.some((d) => d.startsWith("DS4: ")), said.join("\n"));
     assert.ok(!said.some((d) => d.startsWith("DS10")), said.join("\n"));
   });
@@ -379,11 +380,12 @@ test("a Store build from before 0.9.3 (no X-SwapUp-App): its \"All fine\" single
     const r = await certify(id, { row, value }, true);
     assert.equal(r.status, 200, `${row}=${value}: ${JSON.stringify(r.data).slice(0, 200)}`);
   }
-  const v = cases.getCase(adv, id);
+  const v = await cases.getCase(adv, id);
   assert.equal(v.certification.screen?.value, "ok", "the advisor's own tap, as sent — never the camera's chip in their name");
   assert.equal(v.certification.body?.value, "like_new");
   assert.equal(v.condition?.screen, "scratched", "priced at what the camera confirmed");
-  assert.ok(disclosures(id).some((d) => d.startsWith("DS10") && /camera stands/.test(d)), `the report discloses that the camera stands (DS10), as 0.9.2's did: ${disclosures(id).join(" | ")}`);
+  const disc = await disclosures(id);
+  assert.ok(disc.some((d) => d.startsWith("DS10") && /camera stands/.test(d)), `the report discloses that the camera stands (DS10), as 0.9.2's did: ${disc.join(" | ")}`);
   // The same tap from SwapUp Store 0.9.3 (it sends the header) is still refused with the sentence.
   const id2 = await cameraCase({ screen: "scratched", body: "flawless" });
   assert.equal((await certify(id2, { row: "screen", value: "ok" })).status, 409);
@@ -412,13 +414,13 @@ function sweepCheck(missing: string[], verdict: "pass" | "fail" = "fail") {
   const partner = who((db().prepare(`SELECT id FROM users WHERE username = 'partner'`).get() as { id: string }).id);
   const { uploadRateCard } = await import("./catalog.ts");
   const { DEFECT_DEDUCTIONS } = await import("../domain/ratecard.ts");
-  uploadRateCard(partner, { label: "Week 43 (test)", effectiveFrom: "2026-10-19", quoteValidityDays: 3, csv: "model_id,variant,max_price\ngalaxy-s23-ultra,256GB,40000\n", deductions: DEFECT_DEDUCTIONS, activate: true });
+  await uploadRateCard(partner, { label: "Week 43 (test)", effectiveFrom: "2026-10-19", quoteValidityDays: 3, csv: "model_id,variant,max_price\ngalaxy-s23-ultra,256GB,40000\n", deductions: DEFECT_DEDUCTIONS, activate: true });
 }
 
 /** The customer's phone (SwapUp Check 0.9.3) on a new case, its camera grade stored: final, nothing on the glass, the given sweep. */
-function sweptPhone(dc: ReturnType<typeof sweepCheck> | null, opts: { complete?: boolean } = {}) {
-  const created = sessions.createTestSession(adv, { customerName: "Sweep" });
-  const joined = sessions.joinByCode(
+async function sweptPhone(dc: ReturnType<typeof sweepCheck> | null, opts: { complete?: boolean } = {}) {
+  const created = await sessions.createTestSession(adv, { customerName: "Sweep" });
+  const joined = await sessions.joinByCode(
     {
       code: created.session.code,
       installId: `install-sweep-${++installs}`,
@@ -430,26 +432,26 @@ function sweptPhone(dc: ReturnType<typeof sweepCheck> | null, opts: { complete?:
   const ticket = `Ticket ${joined.ticket}`;
   db().prepare(`UPDATE test_sessions SET gradeiq_state = 'ready', gradeiq_id = ?, gradeiq_snapshot = ? WHERE id = ?`).run(randomUUID(), JSON.stringify({ ...finalGrade(false), displayCheck: dc }), created.session.id);
   const at = new Date().toISOString();
-  sessions.deviceResults(ticket, { results: DEFAULT_PLAN.filter((p) => p.id !== "battery_health" && (opts.complete !== false || p.id === "touch")).map((p) => ({ testId: p.id, outcome: "pass", at, detail: null })) });
+  await sessions.deviceResults(ticket, { results: DEFAULT_PLAN.filter((p) => p.id !== "battery_health" && (opts.complete !== false || p.id === "touch")).map((p) => ({ testId: p.id, outcome: "pass", at, detail: null })) });
   if (opts.complete !== false) {
-    sessions.deviceComplete(ticket);
-    sessions.devicePhase(ticket, { phase: "done" });
+    await sessions.deviceComplete(ticket);
+    await sessions.devicePhase(ticket, { phase: "done" });
   }
   return { sessionId: created.session.id, caseId: created.session.caseId, ticket };
 }
 const sessionStatus = (id: string) => (db().prepare(`SELECT status FROM test_sessions WHERE id = ?`).get(id) as { status: string }).status;
-async function untilApplied(id: string, poll: () => unknown) {
+async function untilApplied(id: string, poll: () => Promise<unknown>) {
   for (let i = 0; i < 100 && sessionStatus(id) !== "applied"; i++) {
-    poll();
+    await poll();
     await new Promise((r) => setTimeout(r, 20));
   }
   return sessionStatus(id);
 }
 
 test("SUP-260 (a): SU-AND-00048's partial sweep, tests done — no colour loop, the card's note; \"All fine\" records the screen OK with no display_lines and no −35%; the answer opens by itself", async () => {
-  const t = sweptPhone(sweepCheck(["black", "green"]));
+  const t = await sweptPhone(sweepCheck(["black", "green"]));
   await withCamera(async () => {
-    assert.equal(sessions.deviceStatus(t.ticket).colours, false, "the phone is never asked for the test colours");
+    assert.equal((await sessions.deviceStatus(t.ticket)).colours, false, "the phone is never asked for the test colours");
     const v = (await sessions.getTestSession(adv, t.sessionId)).session;
     assert.equal(v.certify?.colours, "off");
     // What the partial sweep saw is named on the Screen row (review 0.9.4) — the advisor's look decides.
@@ -464,7 +466,7 @@ test("SUP-260 (a): SU-AND-00048's partial sweep, tests done — no colour loop, 
     assert.equal(fine.data.certification.screen?.value, "ok", "the advisor's fine, recorded");
     // The session applies by itself — no Apply tap, no colours.
     assert.equal(await untilApplied(t.sessionId, () => sessions.deviceStatus(t.ticket)), "applied");
-    const c = cases.getCase(adv, t.caseId);
+    const c = await cases.getCase(adv, t.caseId);
     assert.ok(!c.faults.includes("display_lines"), c.faults.join(","));
     assert.equal(c.condition?.screen, "flawless");
     assert.equal(c.camera?.floor.screen, "flawless", "no lines_or_spots floor");
@@ -480,7 +482,7 @@ test("SUP-260 (a): SU-AND-00048's partial sweep, tests done — no colour loop, 
 
 test("review 0.9.4: a SEVERE mark on a partial sweep is named on the card and in the flags; \"All fine\" leaves the Screen untapped (no display_lines, no floor) — the advisor's own Screen tap decides, then the answer opens", async () => {
   const dc = { ...sweepCheck(["black", "green"]), confidence: 0.97, findings: [{ type: "line", label: "Vertical green line across the panel", confidence: 0.97, pattern: "white", severity: "severe" }] };
-  const t = sweptPhone(dc);
+  const t = await sweptPhone(dc);
   await withCamera(async () => {
     const NOTE = 'Screen not fully camera-checked — it saw "Vertical green line across the panel" (severe, 97%, on white); black, green not captured. Look at it.';
     const v = (await sessions.getTestSession(adv, t.sessionId)).session;
@@ -494,7 +496,7 @@ test("review 0.9.4: a SEVERE mark on a partial sweep is named on the card and in
     const lines = await certify(t.caseId, { row: "screen", value: "lines", testSessionId: t.sessionId });
     assert.equal(lines.status, 200, lines.data.error);
     assert.equal(await untilApplied(t.sessionId, () => sessions.deviceStatus(t.ticket)), "applied");
-    const c = cases.getCase(adv, t.caseId);
+    const c = await cases.getCase(adv, t.caseId);
     assert.equal(c.condition?.screen, "lines_or_spots", "the advisor's own look");
     assert.ok(c.camera?.flags.includes(NOTE), c.camera?.flags.join(" | "));
     assert.equal(c.camera?.floor.screen, "flawless", "the camera's partial sweep is still no floor");
@@ -502,7 +504,7 @@ test("review 0.9.4: a SEVERE mark on a partial sweep is named on the card and in
 });
 
 test("SUP-260 (b): a COMPLETE, confirmed sweep fail + \"All fine\" — the fault stays (SUP-5): the camera's chip, display_lines, the floor", async () => {
-  const t = sweptPhone(sweepCheck([]));
+  const t = await sweptPhone(sweepCheck([]));
   await withCamera(async () => {
     const v = (await sessions.getTestSession(adv, t.sessionId)).session;
     assert.deepEqual(v.certify?.notes, { screen: null }, "the sweep saw every colour");
@@ -510,7 +512,7 @@ test("SUP-260 (b): a COMPLETE, confirmed sweep fail + \"All fine\" — the fault
     assert.equal(fine.status, 200, fine.data.error);
     assert.equal(fine.data.certification.screen?.value, "lines", "the camera's own chip: nothing beyond what it saw");
     assert.equal(await untilApplied(t.sessionId, () => sessions.deviceStatus(t.ticket)), "applied");
-    const c = cases.getCase(adv, t.caseId);
+    const c = await cases.getCase(adv, t.caseId);
     assert.ok(c.faults.includes("display_lines"), c.faults.join(","));
     assert.equal(c.condition?.screen, "lines_or_spots");
     assert.ok((c.quote?.lines ?? []).some((l) => l.bp === 3500), "the lines deduction is priced");
@@ -518,11 +520,11 @@ test("SUP-260 (b): a COMPLETE, confirmed sweep fail + \"All fine\" — the fault
 });
 
 test("SUP-260 (c): nothing to certify (a final grade, a complete passing sweep) — the answer opens at once, no colours, no card", async () => {
-  const t = sweptPhone(sweepCheck([], "pass"));
+  const t = await sweptPhone(sweepCheck([], "pass"));
   await withCamera(async () => {
-    assert.equal(sessions.deviceStatus(t.ticket).colours, false);
+    assert.equal((await sessions.deviceStatus(t.ticket)).colours, false);
     assert.equal(await untilApplied(t.sessionId, () => sessions.deviceStatus(t.ticket)), "applied");
-    const c = cases.getCase(adv, t.caseId);
+    const c = await cases.getCase(adv, t.caseId);
     assert.deepEqual(c.certify?.needed, []);
     assert.deepEqual(c.certification, {});
     assert.equal(c.condition?.screen, "flawless");
@@ -530,12 +532,12 @@ test("SUP-260 (c): nothing to certify (a final grade, a complete passing sweep) 
 });
 
 test("SUP-260 (d): a Screen tap while the phone is still testing is accepted — against the session's partial sweep, nothing to wait for", async () => {
-  const t = sweptPhone(sweepCheck(["black", "green"]), { complete: false });
+  const t = await sweptPhone(sweepCheck(["black", "green"]), { complete: false });
   await withCamera(async () => {
     const r = await certify(t.caseId, { row: "screen", value: "ok", testSessionId: t.sessionId });
     assert.equal(r.status, 200, JSON.stringify(r.data).slice(0, 200));
     assert.equal(r.data.certification.screen?.value, "ok");
     assert.ok(!r.data.faults.includes("display_lines"));
-    assert.equal(sessions.deviceStatus(t.ticket).colours, false);
+    assert.equal((await sessions.deviceStatus(t.ticket)).colours, false);
   });
 });

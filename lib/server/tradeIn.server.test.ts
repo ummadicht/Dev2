@@ -74,7 +74,7 @@ const COND = (over: Record<string, unknown> = {}) => ({
 });
 
 async function caseFor(modelId: string, variant: string, faults: string[], issues: string[], body = "scuffed") {
-  const c = cases.createCase(advisor, { customerName: "Trade-in Test" });
+  const c = await cases.createCase(advisor, { customerName: "Trade-in Test" });
   return cases.updateCase(advisor, c.id, { modelId, variant, faults, condition: COND({ issues, body }), ...(s25u ? { upgradeDeviceId: s25u.id } : {}) });
 }
 
@@ -162,7 +162,7 @@ test("PriceIQ has no price and there is no rate card: no price at all — 'No ma
 
 test("an active rate card that doesn't list the phone: 'This phone isn't on the rate card yet.' — the card's reason, not PriceIQ's", async () => {
   const partner = userNamed("partner");
-  uploadRateCard(partner, { label: "Partner sheet one row", effectiveFrom: "2026-10-12", quoteValidityDays: 3, csv: "model_id,variant,max_price\ngalaxy-s24,256GB,40000\n", deductions: DEFECT_DEDUCTIONS, activate: true });
+  await uploadRateCard(partner, { label: "Partner sheet one row", effectiveFrom: "2026-10-12", quoteValidityDays: 3, csv: "model_id,variant,max_price\ngalaxy-s24,256GB,40000\n", deductions: DEFECT_DEDUCTIONS, activate: true });
   try {
     const v = await caseFor("galaxy-z-fold6", "256GB", [], []);
     assert.equal(v.quote?.status, "unpriced");
@@ -171,7 +171,7 @@ test("an active rate card that doesn't list the phone: 'This phone isn't on the 
     assert.equal(v.offer!.headline, "No market price yet");
     // At the counter (a cracked screen the repair prices, so the case is "quoted", with its IMEI): the
     // lock refuses with that reason too — its 409, which anything showing the lock's own error prints.
-    const c = cases.createCase(advisor, { customerName: "Off the card" });
+    const c = await cases.createCase(advisor, { customerName: "Off the card" });
     const body = "35395031234567";
     const ready = await cases.updateCase(advisor, c.id, {
       modelId: "galaxy-z-fold6",
@@ -186,11 +186,11 @@ test("an active rate card that doesn't list the phone: 'This phone isn't on the 
     assert.equal(ready.lockBlockers[0], "This phone isn't on the rate card yet.", ready.lockBlockers.join(" | "));
     assert.ok(!ready.lockBlockers.includes("No trade-in price yet."));
     const CHECKS = { ownership: true, simRemoved: true, imeiMatches: true, noFinanceLock: true, kym: { status: "clear" as const, reference: "SS-1" } };
-    assert.throws(
-      () => cases.lockTradeIn(advisor, c.id, { customer: { name: "Asha Rao", phone: "9820012345", idType: "aadhaar", idLast4: "1234" }, checks: CHECKS }),
+    await assert.rejects(
+      cases.lockTradeIn(advisor, c.id, { customer: { name: "Asha Rao", phone: "9820012345", idType: "aadhaar", idLast4: "1234" }, checks: CHECKS }),
       (e: Error & { status?: number }) => e.status === 409 && e.message === "This phone isn't on the rate card yet."
     );
-    assert.equal(cases.getCase(advisor, c.id).status, "quoted", "nothing locked");
+    assert.equal((await cases.getCase(advisor, c.id)).status, "quoted", "nothing locked");
   } finally {
     db().prepare(`UPDATE rate_cards SET active = 0`).run();
   }
@@ -202,7 +202,7 @@ test("over 90 days old: no PriceIQ price — the partner's rate card answers if 
   assert.match(none.quote?.priceiqWhy ?? "", /^PriceIQ's prices for the Galaxy S24 256GB are from \d{4}-W\d{2} \(100 days old\) — too old to price\.$/);
   // The partner uploads its own rate card: it prices what PriceIQ can't.
   const partner = userNamed("partner");
-  uploadRateCard(partner, { label: "Partner sheet week 42", effectiveFrom: "2026-10-12", quoteValidityDays: 3, csv: "model_id,variant,max_price\ngalaxy-s24,256GB,40000\n", deductions: DEFECT_DEDUCTIONS, activate: true });
+  await uploadRateCard(partner, { label: "Partner sheet week 42", effectiveFrom: "2026-10-12", quoteValidityDays: 3, csv: "model_id,variant,max_price\ngalaxy-s24,256GB,40000\n", deductions: DEFECT_DEDUCTIONS, activate: true });
   try {
     const v = await cases.updateCase(advisor, none.id, { condition: COND({ body: "flawless", issues: ["rear_camera"] }) });
     assert.equal(v.quote?.status, "priced");
@@ -247,19 +247,20 @@ test("a typed trade-in price is refused before anything is saved — the price s
 });
 
 test("an unpriced case is asked again on a plain re-price: a rate card uploaded since prices it, with nobody touching the case", async () => {
-  const c = cases.createCase(advisor, { customerName: "Card later" });
+  const c = await cases.createCase(advisor, { customerName: "Card later" });
   const v0 = await cases.updateCase(advisor, c.id, { modelId: "galaxy-s24", variant: "256GB", faults: [], condition: COND({ body: "flawless" }) });
   assert.equal(v0.quote?.status, "unpriced");
-  const chips0 = await cases.updateCase(advisor, cases.createCase(advisor, { customerName: "Chips later" }).id, { modelId: "galaxy-s24", faults: [], condition: COND({ body: "flawless" }) });
+  const cChips = await cases.createCase(advisor, { customerName: "Chips later" });
+  const chips0 = await cases.updateCase(advisor, cChips.id, { modelId: "galaxy-s24", faults: [], condition: COND({ body: "flawless" }) });
   const chipAsk0 = chips0.offer!.asks.find((a) => a.kind === "storage");
   assert.ok(chipAsk0?.kind === "storage" && chipAsk0.options.every((o) => o.tradeIn === null), "no size priced yet");
   const partner = userNamed("partner");
-  uploadRateCard(partner, { label: "Partner sheet later", effectiveFrom: "2026-10-12", quoteValidityDays: 3, csv: "model_id,variant,max_price\ngalaxy-s24,256GB,40000\n", deductions: DEFECT_DEDUCTIONS, activate: true });
+  await uploadRateCard(partner, { label: "Partner sheet later", effectiveFrom: "2026-10-12", quoteValidityDays: 3, csv: "model_id,variant,max_price\ngalaxy-s24,256GB,40000\n", deductions: DEFECT_DEDUCTIONS, activate: true });
   try {
     // The desk asks for that re-quote when either case opens (AnswerCard, once per open).
     const { autoRequoteKey } = await import("../../components/counter/answerAsks.ts");
-    assert.ok(autoRequoteKey(cases.getCase(advisor, c.id)), "the unpriced quote");
-    assert.ok(autoRequoteKey(cases.getCase(advisor, chips0.id)), "the chips, none priced");
+    assert.ok(autoRequoteKey(await cases.getCase(advisor, c.id)), "the unpriced quote");
+    assert.ok(autoRequoteKey(await cases.getCase(advisor, chips0.id)), "the chips, none priced");
     // The desk's quiet re-quote on open, and the store app's: a plain reprice (requote:false).
     const v = await cases.reprice(advisor, c.id);
     assert.equal(v.quote?.status, "priced");
@@ -293,7 +294,7 @@ test("conditions change the price: a fault the camera confirmed is removed only 
     return true;
   });
   assert.equal(refused, WHY);
-  assert.deepEqual(cases.getCase(advisor, v0.id).faults, ["rear_camera"]);
+  assert.deepEqual((await cases.getCase(advisor, v0.id)).faults, ["rear_camera"]);
   // The desk keeps that change for one reason field; too short is refused the same way.
   const held = heldForReason(patch, refused);
   assert.ok(held);
@@ -310,7 +311,7 @@ test("conditions change the price: a fault the camera confirmed is removed only 
 });
 
 test("storage unknown: each size's chip is priced the way the trade-in will be, asked together, with the data's age under them", async () => {
-  const c = cases.createCase(advisor, { customerName: "Chips" });
+  const c = await cases.createCase(advisor, { customerName: "Chips" });
   const v = await cases.updateCase(advisor, c.id, { modelId: "galaxy-s23-ultra", faults: [], condition: COND() });
   const ask = v.offer!.asks.find((a) => a.kind === "storage");
   assert.ok(ask && ask.kind === "storage");
@@ -342,7 +343,7 @@ test("SUP-22: PriceIQ off — a case priced from the card carries no 'Not from P
   const keep = process.env.PRICEIQ_API_KEY;
   delete process.env.PRICEIQ_API_KEY;
   const partner = userNamed("partner");
-  uploadRateCard(partner, { label: "Partner sheet SUP-22", effectiveFrom: "2026-10-12", quoteValidityDays: 3, csv: "model_id,variant,max_price\ngalaxy-s23-ultra,512GB,50000\n", deductions: DEFECT_DEDUCTIONS, activate: true });
+  await uploadRateCard(partner, { label: "Partner sheet SUP-22", effectiveFrom: "2026-10-12", quoteValidityDays: 3, csv: "model_id,variant,max_price\ngalaxy-s23-ultra,512GB,50000\n", deductions: DEFECT_DEDUCTIONS, activate: true });
   try {
     const v = await caseFor("galaxy-s23-ultra", "512GB", [], []);
     assert.equal(v.quote?.source.kind, "partner_ratecard");
@@ -352,7 +353,7 @@ test("SUP-22: PriceIQ off — a case priced from the card carries no 'Not from P
     assert.equal(stored.priceiqWhy, undefined, "not written either");
     // A quote saved before this (every card-priced case on 0.9.2): read without it.
     db().prepare(`UPDATE cases SET quote = ? WHERE id = ?`).run(JSON.stringify({ ...stored, priceiqWhy: "No refurbished market price yet — PriceIQ isn't connected." }), v.id);
-    const old = cases.getCase(advisor, v.id);
+    const old = await cases.getCase(advisor, v.id);
     assert.equal(old.quote?.priceiqWhy, undefined);
     assert.equal(old.offer!.swap.tradeInDetail?.note, null);
   } finally {
@@ -380,7 +381,7 @@ test("a quote stored by an older build from a source that no longer exists is ne
   const v0 = await caseFor("galaxy-s23-ultra", "256GB", [], []);
   const retired = { ...v0.quote!, source: { kind: "sample", label: "an older build's illustrative card" }, validUntil: new Date(Date.now() + 86_400_000).toISOString(), priceiq: undefined };
   db().prepare(`UPDATE cases SET quote = ? WHERE id = ?`).run(JSON.stringify(retired), v0.id);
-  const seen = cases.getCase(advisor, v0.id);
+  const seen = await cases.getCase(advisor, v0.id);
   assert.equal(seen.quoteExpired, true);
   assert.ok(seen.lockBlockers.some((b) => /expired/.test(b)), seen.lockBlockers.join(" | "));
   const re = await cases.reprice(advisor, v0.id);
@@ -413,7 +414,7 @@ test("the partner never gets the store's SELL price or its answer: no PriceIQ li
 test("SUP-29: a cracked screen set on the condition alone ticks its fault — the screen repair is quoted, never 'Nothing to repair' — and the trade-in is the same", async () => {
   const flawless = COND({ body: "flawless" });
   const cracked = COND({ body: "flawless", screen: "cracked" });
-  const c = cases.createCase(advisor, { customerName: "Condition Only" });
+  const c = await cases.createCase(advisor, { customerName: "Condition Only" });
   const v0 = await cases.updateCase(advisor, c.id, { modelId: "galaxy-s23-ultra", variant: "256GB", faults: [], condition: flawless, ...(s25u ? { upgradeDeviceId: s25u.id } : {}) });
   assert.equal(v0.offer!.repair.nothingToRepair, true);
   // The condition editor's own save: the condition, and nothing else.
@@ -440,14 +441,14 @@ test("SUP-29: a cracked screen set on the condition alone ticks its fault — th
   assert.equal(v.quote?.amount, old.quote?.amount);
   assert.deepEqual(v.quote?.lines, old.quote?.lines);
   // …and what ticking "Cracked screen" itself gives.
-  const t = cases.createCase(advisor, { customerName: "Fault Ticked" });
+  const t = await cases.createCase(advisor, { customerName: "Fault Ticked" });
   const viaFault = await cases.updateCase(advisor, t.id, { modelId: "galaxy-s23-ultra", variant: "256GB", faults: ["screen_cracked"], condition: cracked });
   assert.equal(v.quote?.amount, viaFault.quote?.amount);
   assert.equal(v.repair?.customerPays, viaFault.repair?.customerPays);
 });
 
 test("SUP-29: lines, a cracked back and a faulty part set on the condition each bring their fault; looks bring none; a fault list sent with it is taken as sent", async () => {
-  const c = cases.createCase(advisor, { customerName: "Condition Only 2" });
+  const c = await cases.createCase(advisor, { customerName: "Condition Only 2" });
   await cases.updateCase(advisor, c.id, { modelId: "galaxy-s23-ultra", variant: "256GB", faults: [], condition: COND({ body: "flawless" }) });
   const looks = await cases.updateCase(advisor, c.id, { condition: COND({ screen: "scratched", body: "dented" }) });
   assert.deepEqual(looks.faults, [], "scratches and dents are looks, not repairs");
@@ -470,7 +471,7 @@ test("SUP-29: lines, a cracked back and a faulty part set on the condition each 
 
 test("SUP-29 review: a crack tapped by mistake is undone in the condition editor — cracked, then flawless: no fault, the condition as set, nothing to repair, the same trade-in", async () => {
   const good = COND({ body: "flawless", screen: "flawless" });
-  const c = cases.createCase(advisor, { customerName: "Mis-tap" });
+  const c = await cases.createCase(advisor, { customerName: "Mis-tap" });
   const v0 = await cases.updateCase(advisor, c.id, { modelId: "galaxy-s23-ultra", variant: "256GB", faults: [], condition: good, ...(s25u ? { upgradeDeviceId: s25u.id } : {}) });
   assert.equal(v0.offer!.repair.nothingToRepair, true);
   assert.equal(v0.quote?.status, "priced");
@@ -494,7 +495,7 @@ test("SUP-29 review: a crack tapped by mistake is undone in the condition editor
   assert.equal(v.quote?.status, "priced");
   assert.equal(v.quote?.amount, v0.quote?.amount);
   assert.deepEqual(v.quote?.lines, v0.quote?.lines);
-  const fresh = cases.getCase(advisor, c.id);
+  const fresh = await cases.getCase(advisor, c.id);
   assert.deepEqual(fresh.faults, []);
   assert.deepEqual(fresh.faultSources, {});
 

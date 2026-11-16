@@ -63,9 +63,9 @@ after(() => {
 });
 
 /** A session joined by SwapUp Check 0.8.0 on a Galaxy S23 Ultra that measured 256 GB; every test passes. */
-function testedPhone(name: string, opts: { complete?: boolean } = {}) {
-  const created = sessions.createTestSession(adv, { customerName: name, customerPhone: "9820012345" });
-  const joined = sessions.joinByCode(
+async function testedPhone(name: string, opts: { complete?: boolean } = {}) {
+  const created = await sessions.createTestSession(adv, { customerName: name, customerPhone: "9820012345" });
+  const joined = await sessions.joinByCode(
     {
       code: created.session.code,
       installId: `install-${Math.random().toString(36).slice(2, 12)}`,
@@ -76,10 +76,10 @@ function testedPhone(name: string, opts: { complete?: boolean } = {}) {
   );
   const ticket = `Ticket ${joined.ticket}`;
   const at = new Date().toISOString();
-  sessions.deviceResults(ticket, { results: DEFAULT_PLAN.filter((p) => p.id !== "battery_health").map((p) => ({ testId: p.id, outcome: "pass", at, detail: null })) });
+  await sessions.deviceResults(ticket, { results: DEFAULT_PLAN.filter((p) => p.id !== "battery_health").map((p) => ({ testId: p.id, outcome: "pass", at, detail: null })) });
   if (opts.complete !== false) {
-    sessions.deviceComplete(ticket);
-    sessions.devicePhase(ticket, { phase: "done" });
+    await sessions.deviceComplete(ticket);
+    await sessions.devicePhase(ticket, { phase: "done" });
   }
   return { sessionId: created.session.id, caseId: created.session.caseId, ticket, plan: joined.session.plan };
 }
@@ -91,7 +91,7 @@ const certifyAll = async (caseId: string, sessionId: string) => {
 };
 
 test("still testing: nothing goes on the case, whatever the advisor taps", async () => {
-  const t = testedPhone("Still Testing", { complete: false });
+  const t = await testedPhone("Still Testing", { complete: false });
   // Every row can be tapped now — the Screen too: nothing waits for test colours any more (SUP-260).
   await cases.certifyCase(adv, t.caseId, { row: "screen", value: "ok", testSessionId: t.sessionId });
   await cases.certifyCase(adv, t.caseId, { row: "body", value: "scuffs", testSessionId: t.sessionId });
@@ -103,7 +103,7 @@ test("still testing: nothing goes on the case, whatever the advisor taps", async
 });
 
 test("the camera couldn't decide: the results wait for the advisor's taps, then the phone's own poll puts them on the case — no Apply call", async () => {
-  const t = testedPhone("Asha Rao");
+  const t = await testedPhone("Asha Rao");
   // The phone has finished; the camera is off, so "Check the phone" holds the answer.
   let v = (await sessions.getTestSession(adv, t.sessionId)).session;
   assert.equal(v.status, "complete");
@@ -113,32 +113,32 @@ test("the camera couldn't decide: the results wait for the advisor's taps, then 
   // The phone keeps asking — still nothing applied while a row is open.
   await cases.certifyCase(adv, t.caseId, { row: "screen", value: "ok", testSessionId: t.sessionId });
   await cases.certifyCase(adv, t.caseId, { row: "body", value: "scuffs", testSessionId: t.sessionId });
-  sessions.deviceStatus(t.ticket);
+  await sessions.deviceStatus(t.ticket);
   await wait(50);
   assert.equal(statusOf(t.sessionId), "complete");
   // The last tap; then the phone's next status poll — no staff call at all.
   await cases.certifyCase(adv, t.caseId, { row: "liquid", value: "clean", testSessionId: t.sessionId });
-  sessions.deviceStatus(t.ticket);
+  await sessions.deviceStatus(t.ticket);
   await until("the automatic apply", () => statusOf(t.sessionId) === "applied");
   const rows = applies(t.sessionId);
   assert.equal(rows.length, 1, "applied once");
   assert.equal(JSON.parse(rows[0].detail).auto, true);
   assert.equal(rows[0].user_id, adv.id, "recorded as the advisor who started the trade-in");
   // The answer is on the case: the two numbers and the grade, with what was certified folded in.
-  const c = cases.getCase(adv, t.caseId);
+  const c = await cases.getCase(adv, t.caseId);
   assert.ok(c.offer, "the answer");
   assert.equal(c.condition?.body, "scuffed");
   assert.equal(c.device?.variant, "256GB");
   // The store's next poll says so; the phone shows "the store has your results".
   v = (await sessions.getTestSession(adv, t.sessionId)).session;
   assert.deepEqual(v.autoApply, { state: "applied" });
-  assert.equal(sessions.deviceStatus(t.ticket).status, "applied");
+  assert.equal((await sessions.deviceStatus(t.ticket)).status, "applied");
   // A manual Apply now changes nothing (the gate is Apply's own).
   await assert.rejects(sessions.applyTestSession(adv, t.sessionId), (e: Error & { status?: number }) => e.status === 409 && /already on the case/.test(e.message));
 });
 
 test("the store's poll does it too, and its answer already says applied", async () => {
-  const t = testedPhone("Ravi Kumar");
+  const t = await testedPhone("Ravi Kumar");
   await certifyAll(t.caseId, t.sessionId);
   const v = (await sessions.getTestSession(adv, t.sessionId)).session;
   assert.equal(v.status, "applied");
@@ -147,7 +147,7 @@ test("the store's poll does it too, and its answer already says applied", async 
 });
 
 test("Apply refuses: its one-line reason is on the session, not retried until something changes; Retry is a manual Apply", async () => {
-  const t = testedPhone("Walked Off");
+  const t = await testedPhone("Walked Off");
   await certifyAll(t.caseId, t.sessionId);
   // Meanwhile the case left the counter on the desk.
   db().prepare(`UPDATE cases SET status = 'walked_away', updated_at = ? WHERE id = ?`).run(new Date().toISOString(), t.caseId);
@@ -166,44 +166,44 @@ test("Apply refuses: its one-line reason is on the session, not retried until so
 });
 
 test("a partial Apply stays the advisor's: \"Apply the results so far\" is never held by the card", async () => {
-  const t = testedPhone("Gave Up", { complete: false });
+  const t = await testedPhone("Gave Up", { complete: false });
   const out = await sessions.applyTestSession(adv, t.sessionId);
   assert.equal(out.session.status, "applied");
   assert.equal(JSON.parse(applies(t.sessionId)[0].detail).auto, undefined, "a manual Apply is recorded as one");
 });
 
 test("the battery screenshot is left out when the case already has a battery % from an attached Phonecheck report", async () => {
-  const c = cases.createCase(adv, { customerName: "Has Phonecheck" });
+  const c = await cases.createCase(adv, { customerName: "Has Phonecheck" });
   const now = new Date().toISOString();
   db()
     .prepare(`INSERT INTO phonecheck_records (id, record_key, source, case_id, record, raw, received_at, updated_at, attached_at, attached_by) VALUES (?,?,?,?,?,?,?,?,?,?)`)
     .run("pc_test_1", "pc-key-1", "upload", c.id, JSON.stringify({ passed: [], failed: [], pending: [], batteryHealthPct: 91, batteryCycles: null, links: { a4: null, erasure: null, dhr: null } }), "{}", now, now, now, adv.id);
-  const s = sessions.createTestSession(adv, { caseId: c.id });
-  const j = sessions.joinByCode({ code: s.session.code, installId: "install-battery-known", appVersion: "0.8.0", device: { brand: "samsung", modelCode: "SM-S918B", totalDiskBytes: 256e9 } }, "127.0.0.1");
+  const s = await sessions.createTestSession(adv, { caseId: c.id });
+  const j = await sessions.joinByCode({ code: s.session.code, installId: "install-battery-known", appVersion: "0.8.0", device: { brand: "samsung", modelCode: "SM-S918B", totalDiskBytes: 256e9 } }, "127.0.0.1");
   assert.ok(!j.session.plan.some((p) => p.id === "battery_health"), "not asked: Phonecheck read it");
   // Without such a report the step is there (and the phone lets the customer skip it).
-  const other = testedPhone("No Report", { complete: false });
+  const other = await testedPhone("No Report", { complete: false });
   assert.ok(other.plan.some((p) => p.id === "battery_health"));
 });
 
 test("an automatic Apply is recorded as whoever checked the phone — the last 'Check the phone' tap — not whoever only started the trade-in", async () => {
   const mgr = who("usr_mgr_and");
-  const t = testedPhone("Checked By Manager");
+  const t = await testedPhone("Checked By Manager");
   await cases.certifyCase(mgr, t.caseId, { row: "screen", value: "ok", testSessionId: t.sessionId });
   await cases.certifyCase(mgr, t.caseId, { row: "body", value: "scuffs", testSessionId: t.sessionId });
   await cases.certifyCase(mgr, t.caseId, { row: "liquid", value: "clean", testSessionId: t.sessionId });
   // The customer's phone polls first: no staff user on that call.
-  sessions.deviceStatus(t.ticket);
+  await sessions.deviceStatus(t.ticket);
   await until("the automatic apply", () => statusOf(t.sessionId) === "applied");
   assert.equal(applies(t.sessionId)[0].user_id, mgr.id);
-  assert.equal(cases.getCase(adv, t.caseId).camera?.by, mgr.name);
+  assert.equal((await cases.getCase(adv, t.caseId)).camera?.by, mgr.name);
 });
 
 test("a case closed at the desk while the phone was testing: the card can't be tapped any more, so Apply is tried and its refusal shows", async () => {
-  const t = testedPhone("Walked Away", { complete: false });
-  cases.walkAway(adv, t.caseId);
-  sessions.deviceComplete(t.ticket);
-  sessions.devicePhase(t.ticket, { phase: "done" });
+  const t = await testedPhone("Walked Away", { complete: false });
+  await cases.walkAway(adv, t.caseId);
+  await sessions.deviceComplete(t.ticket);
+  await sessions.devicePhase(t.ticket, { phase: "done" });
   let v = (await sessions.getTestSession(adv, t.sessionId)).session;
   for (let i = 0; i < 50 && v.autoApply?.state !== "refused"; i++) {
     await wait(20);

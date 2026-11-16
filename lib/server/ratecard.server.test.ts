@@ -38,9 +38,9 @@ const upload = (csv: string, label = "Week 42") => uploadRateCard(partner, { lab
 
 const HEADER = "model_id,variant,max_price,good_price,fair_price,best_value_price";
 
-test("upload: the 6-column sheet keeps each row's grade prices; a blank grade column is simply not listed", () => {
-  upload(`${HEADER}\ngalaxy-s23-ultra,256GB,34960,33574,32255,30672\ngalaxy-s23,128GB,20000,19000,,\ngalaxy-s22,128GB,12000,,,\n`);
-  const card = activeRateCard(partner.orgId)!;
+test("upload: the 6-column sheet keeps each row's grade prices; a blank grade column is simply not listed", async () => {
+  await upload(`${HEADER}\ngalaxy-s23-ultra,256GB,34960,33574,32255,30672\ngalaxy-s23,128GB,20000,19000,,\ngalaxy-s22,128GB,12000,,,\n`);
+  const card = (await activeRateCard(partner.orgId))!;
   assert.deepEqual(card.entries, [
     { modelId: "galaxy-s23-ultra", variant: "256GB", maxPrice: 34_960, gradePrices: { Good: 33_574, Fair: 32_255, "Best Value": 30_672 } },
     { modelId: "galaxy-s23", variant: "128GB", maxPrice: 20_000, gradePrices: { Good: 19_000 } },
@@ -48,25 +48,25 @@ test("upload: the 6-column sheet keeps each row's grade prices; a blank grade co
   ]);
 });
 
-test("upload: a row whose price rises as the grade falls is refused, with its line number — nothing is saved", () => {
-  const before = activeRateCard(partner.orgId)!.id;
-  assert.throws(
+test("upload: a row whose price rises as the grade falls is refused, with its line number — nothing is saved", async () => {
+  const before = (await activeRateCard(partner.orgId))!.id;
+  await assert.rejects(
     () => upload(`${HEADER}\ngalaxy-s23-ultra,256GB,34960,33574,32255,30672\ngalaxy-s23,128GB,20000,21000,,\n`, "Bad week"),
     (e: Error) => /Line 3: the Good price \(21000\) is above the Superb price \(20000\)/.test(e.message)
   );
-  assert.throws(() => upload(`${HEADER}\ngalaxy-s23,128GB,20000,,0,\n`, "Bad week"), (e: Error) => /Line 2: the Fair price must be a whole rupee amount/.test(e.message));
-  assert.throws(() => upload(`${HEADER}\ngalaxy-s23,128GB,20000,18000,,19000\n`, "Bad week"), (e: Error) => /Line 2: the Best Value price \(19000\) is above the Good price/.test(e.message));
-  assert.equal(activeRateCard(partner.orgId)!.id, before);
+  await assert.rejects(() => upload(`${HEADER}\ngalaxy-s23,128GB,20000,,0,\n`, "Bad week"), (e: Error) => /Line 2: the Fair price must be a whole rupee amount/.test(e.message));
+  await assert.rejects(() => upload(`${HEADER}\ngalaxy-s23,128GB,20000,18000,,19000\n`, "Bad week"), (e: Error) => /Line 2: the Best Value price \(19000\) is above the Good price/.test(e.message));
+  assert.equal((await activeRateCard(partner.orgId))!.id, before);
 });
 
-test("upload: an old 3-column sheet still uploads, exactly as before — no grade prices", () => {
-  upload("model_id,variant,max_price\ngalaxy-s24,256GB,40000\n", "Old sheet");
-  assert.deepEqual(activeRateCard(partner.orgId)!.entries, [{ modelId: "galaxy-s24", variant: "256GB", maxPrice: 40_000 }]);
+test("upload: an old 3-column sheet still uploads, exactly as before — no grade prices", async () => {
+  await upload("model_id,variant,max_price\ngalaxy-s24,256GB,40000\n", "Old sheet");
+  assert.deepEqual((await activeRateCard(partner.orgId))!.entries, [{ modelId: "galaxy-s24", variant: "256GB", maxPrice: 40_000 }]);
 });
 
-test("template: the 6-column header, pre-filled from the active card's grade prices — and it uploads back as the same card", () => {
-  upload(`${HEADER}\ngalaxy-s23-ultra,256GB,34960,33574,32255,30672\ngalaxy-s23,128GB,20000,19000,,\n`);
-  const t = rateCardTemplateCsv(partner.orgId);
+test("template: the 6-column header, pre-filled from the active card's grade prices — and it uploads back as the same card", async () => {
+  await upload(`${HEADER}\ngalaxy-s23-ultra,256GB,34960,33574,32255,30672\ngalaxy-s23,128GB,20000,19000,,\n`);
+  const t = await rateCardTemplateCsv(partner.orgId);
   const lines = t.csv.trim().split(/\r\n/);
   assert.equal(lines[0], HEADER);
   assert.ok(lines.includes("galaxy-s23-ultra,256GB,34960,33574,32255,30672"));
@@ -74,10 +74,10 @@ test("template: the 6-column header, pre-filled from the active card's grade pri
   assert.ok(lines.includes("galaxy-s23-ultra,512GB,,,,"), "a row the card doesn't price stays blank");
   assert.equal(t.prefilled, 2);
   const sorted = (es: { modelId: string; variant: string }[]) => [...es].sort((a, b) => `${a.modelId}|${a.variant}`.localeCompare(`${b.modelId}|${b.variant}`));
-  const before = sorted(activeRateCard(partner.orgId)!.entries);
+  const before = sorted((await activeRateCard(partner.orgId))!.entries);
   // The partner fills nothing more: only the priced rows go back up (the upload screen drops blank ones).
-  upload(lines.filter((l, i) => i === 0 || !/^[^,]+,[^,]+,,/.test(l)).join("\n"), "Round trip");
-  assert.deepEqual(sorted(activeRateCard(partner.orgId)!.entries), before);
+  await upload(lines.filter((l, i) => i === 0 || !/^[^,]+,[^,]+,,/.test(l)).join("\n"), "Round trip");
+  assert.deepEqual(sorted((await activeRateCard(partner.orgId))!.entries), before);
 });
 
 test("scripts/activate-rate-card.ts: the page's upload from the shell — active at once, SwapUp's % per defect with nothing off for accessories or age, only counts and the id; a label already used is refused; a database that isn't there is refused, never made", async () => {
@@ -105,8 +105,8 @@ test("scripts/activate-rate-card.ts: the page's upload from the shell — active
   assert.deepEqual(rest, [], "nothing else on stdout");
   assert.doesNotMatch(out.stdout, /34960|34,960|33574/, "never a price");
   // Through the server's own module, on the database the script wrote.
-  const Database = (await import("better-sqlite3")).default;
-  const other = new Database(file, { readonly: true });
+  const { DatabaseSync } = await import("node:sqlite");
+  const other = new DatabaseSync(file, { readOnly: true });
   try {
     const rows = other.prepare(`SELECT id, active, data FROM rate_cards`).all() as { id: string; active: number; data: string }[];
     assert.deepEqual(rows.map((x) => [x.id, x.active]), [[id, 1]]);
@@ -129,12 +129,12 @@ test("scripts/activate-rate-card.ts: the page's upload from the shell — active
   }
 });
 
-test("SUP-48: the rate-card line staff read names the partner's role, never the partner org's own name", () => {
+test("SUP-48: the rate-card line staff read names the partner's role, never the partner org's own name", async () => {
   const was = (db().prepare(`SELECT name FROM orgs WHERE id = ?`).get(partner.orgId) as { name: string }).name;
   db().prepare(`UPDATE orgs SET name = ? WHERE id = ?`).run("Zephyrine Buyback Pvt Ltd", partner.orgId);
   try {
-    upload("model_id,variant,max_price\ngalaxy-s23-ultra,256GB,40000\n", "SUP-48 card");
-    const mode = partnerMode(partner.orgId);
+    await upload("model_id,variant,max_price\ngalaxy-s23-ultra,256GB,40000\n", "SUP-48 card");
+    const mode = await partnerMode(partner.orgId);
     assert.equal(mode.kind, "partner_ratecard");
     assert.equal(mode.why, "The buyback partner's rate card from 2026-10-12.");
     assert.doesNotMatch(mode.why, /Zephyrine/);

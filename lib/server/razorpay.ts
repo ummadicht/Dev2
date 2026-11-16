@@ -660,7 +660,7 @@ export async function sendCaseReceiptEmail(
 
   const latestPayment = paymentsToShow[0] ?? null;
   const subject = latestPayment
-    ? `Payment Receipt · ${c.ref} (${fmtInr(latestPayment.amount)} — ${PLAN_LABELS[latestPayment.payment_plan]})`
+    ? `Payment Receipt · ${c.ref} (${fmtInr(latestPayment.amount)} — ${PLAN_LABELS[latestPayment.payment_plan] ?? latestPayment.payment_plan})`
     : `SwapUp Receipt · ${c.ref} (${storeName})`;
 
   const paymentRowsHtml =
@@ -670,7 +670,7 @@ export async function sendCaseReceiptEmail(
             (p) => `
         <tr>
           <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;">
-            <div style="font-weight:700;color:#0f172a;">${PLAN_LABELS[p.payment_plan]}</div>
+            <div style="font-weight:700;color:#0f172a;">${PLAN_LABELS[p.payment_plan] ?? p.payment_plan}</div>
             <div style="font-size:12px;color:#64748b;">
               Order: ${p.razorpay_order_id} · Payment: ${p.razorpay_payment_id || "—"} · ${(p.payment_method || "UPI").toUpperCase()}
               ${p.emi_months ? ` · ${p.emi_months}M EMI (${fmtInr(p.emi_monthly_amount)}/mo)` : ""}
@@ -779,7 +779,7 @@ export async function sendCaseReceiptEmail(
     "Razorpay Payments:",
     ...paymentsToShow.map(
       (p) =>
-        `- ${PLAN_LABELS[p.payment_plan]}: ${fmtInr(p.amount)}${
+        `- ${PLAN_LABELS[p.payment_plan] ?? p.payment_plan}: ${fmtInr(p.amount)}${
           p.emi_months ? ` (${p.emi_months}M EMI @ ${fmtInr(p.emi_monthly_amount)}/mo)` : ""
         }${p.remaining_due > 0 ? ` | Remaining Due: ${fmtInr(p.remaining_due)}` : ""} [Order: ${p.razorpay_order_id} / Payment: ${p.razorpay_payment_id || "—"}]`
     ),

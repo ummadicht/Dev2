@@ -51,7 +51,7 @@ const userNamed = (username: string): U => {
   return { id: r.id, username: r.username, name: r.name, role: r.role, orgId: r.org_id, storeId: r.store_id, exp: Date.now() + 3_600_000 };
 };
 
-test("a new database: the test programmes and their logins — no rate card of SwapUp's own, no example cases, no pickups", () => {
+test("a new database: the test programmes and their logins — no rate card of SwapUp's own, no example cases, no pickups", async () => {
   assert.deepEqual(
     (db().prepare(`SELECT id, demo FROM orgs WHERE kind = 'client' ORDER BY id`).all() as { id: string; demo: number }[]).map((o) => [o.id, o.demo]),
     [
@@ -60,8 +60,8 @@ test("a new database: the test programmes and their logins — no rate card of S
     ]
   );
   assert.equal(count(`SELECT COUNT(*) n FROM stores`), 3);
-  for (const login of ["advisor", "manager", "samsung", "partner", "platform", "advisor.kor", "xc.advisor"]) assert.ok(authenticate(login, "swapup2026"), login);
-  assert.equal(demoPartnerId(), DEMO_PARTNER.orgId);
+  for (const login of ["advisor", "manager", "samsung", "partner", "platform", "advisor.kor", "xc.advisor"]) assert.ok(await authenticate(login, "swapup2026"), login);
+  assert.equal(await demoPartnerId(), DEMO_PARTNER.orgId);
   assert.equal(one<{ name: string }>(`SELECT name FROM orgs WHERE id = ?`, DEMO_PARTNER.orgId).name, "Buyback Partner (demo)");
   assert.equal(count(`SELECT COUNT(*) n FROM rate_cards`), 0, "no SAMPLE card: prices come from PriceIQ or the partner's card");
   assert.equal(count(`SELECT COUNT(*) n FROM cases`), 0, "no example cases");
@@ -69,22 +69,22 @@ test("a new database: the test programmes and their logins — no rate card of S
   assert.equal(count(`SELECT COUNT(*) n FROM credit_ledger`), 0);
   assert.equal(count(`SELECT COUNT(*) n FROM campaigns`), 2, "the bonus campaigns stay");
   assert.equal(count(`SELECT COUNT(*) n FROM trade_models WHERE json_extract(source, '$.kind') NOT IN ('oem_public', 'approximate')`), 0);
-  const mode = partnerMode(DEMO_PARTNER.orgId);
+  const mode = await partnerMode(DEMO_PARTNER.orgId);
   assert.equal(mode.kind, "none");
   assert.ok(!namesBrand(`${mode.label} ${mode.why}`));
 });
 
-test("SUP-259: a database seeded before a model joined the list gains it on boot — additive only, idempotent, audited; an edited row is never touched", () => {
+test("SUP-259: a database seeded before a model joined the list gains it on boot — additive only, idempotent, audited; an edited row is never touched", async () => {
   const ADDED = ["iphone-13-pro-max", "iphone-14-plus", "iphone-14-pro-max", "iphone-15-plus", "iphone-15-pro-max", "iphone-16-plus", "iphone-16-pro", "iphone-16-pro-max", "iphone-16e", "iphone-17", "iphone-air", "iphone-17-pro", "iphone-17-pro-max"];
   assert.equal(count(`SELECT COUNT(*) n FROM trade_models`), 152, "a new database has the whole list");
-  assert.deepEqual(backfillTradeModels(), [], "nothing to add on a new database");
+  assert.deepEqual(await backfillTradeModels(), [], "nothing to add on a new database");
   // The live database as it was: none of the 13, and an admin's own edit on a row that IS on file.
   const ph = ADDED.map(() => "?").join(",");
   db().prepare(`DELETE FROM trade_models WHERE id IN (${ph})`).run(...ADDED);
   db().prepare(`UPDATE trade_models SET variants = '["128GB"]', model = 'iPhone 13 (edited)' WHERE id = 'iphone-13'`).run();
   const audits = () => count(`SELECT COUNT(*) n FROM audit WHERE action = 'catalog.trade_models.backfill'`);
   const before = audits();
-  const added = backfillTradeModels();
+  const added = await backfillTradeModels();
   assert.deepEqual([...added].sort(), [...ADDED].sort(), "exactly the 13");
   assert.equal(count(`SELECT COUNT(*) n FROM trade_models`), 152);
   const edited = one<{ variants: string; model: string }>(`SELECT variants, model FROM trade_models WHERE id = 'iphone-13'`);
@@ -95,20 +95,20 @@ test("SUP-259: a database seeded before a model joined the list gains it on boot
   const row = one<{ detail: string }>(`SELECT detail FROM audit WHERE action = 'catalog.trade_models.backfill' ORDER BY id DESC LIMIT 1`);
   assert.deepEqual([...JSON.parse(row.detail).added].sort(), [...ADDED].sort());
   // The second boot adds nothing and writes nothing.
-  assert.deepEqual(backfillTradeModels(), []);
+  assert.deepEqual(await backfillTradeModels(), []);
   assert.equal(audits(), before + 1);
   // No price comes with them: nothing on any rate card, nothing in the repair book.
   assert.equal(count(`SELECT COUNT(*) n FROM repair_book WHERE model_id IN (${ph})`, ...ADDED), 0);
   db().prepare(`UPDATE trade_models SET variants = '["128GB","256GB"]', model = 'iPhone 13' WHERE id = 'iphone-13'`).run();
 });
 
-test("a database seeded under the partner's former name: renamed once — read from the partner's own row, only SwapUp's own sentences", () => {
+test("a database seeded under the partner's former name: renamed once — read from the partner's own row, only SwapUp's own sentences", async () => {
   const d = db();
   const OLD = "Oldbrand"; // any former name: the pass reads it from the row, it is never spelled in the code
   const P = DEMO_PARTNER;
   const u = userNamed("advisor");
-  const c1 = cases.createCase(u, { customerName: "Copy test" });
-  const c2 = cases.createCase(u, { customerName: "Typed by a person" });
+  const c1 = await cases.createCase(u, { customerName: "Copy test" });
+  const c2 = await cases.createCase(u, { customerName: "Typed by a person" });
   const manualQuote = {
     status: "priced",
     amount: 12_000,
@@ -143,11 +143,11 @@ test("a database seeded under the partner's former name: renamed once — read f
   d.prepare(`INSERT INTO pickups (id, ref, org_id, store_id, partner_id, status, collector_name, demo, requested_at) VALUES ('pk_typed', 'PK-AND-0002', 'org_samsung_svc', 'st_and', ?, 'settled', ?, 0, '2026-10-05T00:00:00Z')`).run(P.orgId, `Sunil (${OLD})`);
   d.prepare(`DELETE FROM meta WHERE key = 'renamed_demo_partner'`).run();
 
-  renameDemoPartner();
+  await renameDemoPartner();
 
   assert.equal(one<{ name: string }>(`SELECT name FROM orgs WHERE id = ?`, P.orgId).name, "Buyback Partner (demo)");
   assert.deepEqual(one(`SELECT username, name FROM users WHERE id = ?`, P.userId), { username: "partner", name: "Partner Ops (demo)" });
-  assert.equal(authenticate("partner", "swapup2026")?.id, P.userId);
+  assert.equal((await authenticate("partner", "swapup2026"))?.id, P.userId);
   const q = one<{ quote: string; repaired_quote: string; camera_check: string; clearance: string; storage_quotes: string }>(`SELECT quote, repaired_quote, camera_check, clearance, storage_quotes FROM cases WHERE id = ?`, c1.id);
   assert.deepEqual(JSON.parse(q.quote).lines, [{ label: "Buyback Partner (demo) quote · ref OB-82731", amount: 12_000 }]);
   assert.equal(JSON.parse(q.quote).source.label, "Entered from the Buyback Partner (demo) app by Rahul Desai");
@@ -165,16 +165,16 @@ test("a database seeded under the partner's former name: renamed once — read f
 
   // Once: the former name put back by hand is not renamed again.
   d.prepare(`UPDATE orgs SET name = ? WHERE id = ?`).run(OLD, P.orgId);
-  renameDemoPartner();
+  await renameDemoPartner();
   assert.equal(one<{ name: string }>(`SELECT name FROM orgs WHERE id = ?`, P.orgId).name, OLD);
   d.prepare(`UPDATE orgs SET name = ? WHERE id = ?`).run(P.name, P.orgId);
   d.prepare(`DELETE FROM pickups WHERE id IN ('pk_seeded', 'pk_typed')`).run();
 });
 
-test("stored words that asked staff to type a trade-in price are reworded on every boot — SwapUp's exact sentences only, idempotent", () => {
+test("stored words that asked staff to type a trade-in price are reworded on every boot — SwapUp's exact sentences only, idempotent", async () => {
   const d = db();
   const u = userNamed("advisor");
-  const c = cases.createCase(u, { customerName: "Reword test" });
+  const c = await cases.createCase(u, { customerName: "Reword test" });
   const quote = { status: "unpriced", amount: null, lines: [], source: { kind: "none", label: "No market price" }, partner: "Buyback Partner (demo)", partnerRef: null, reason: "No market price yet — enter a quote." };
   const chips = [
     { variant: "256GB", amount: null, reason: "No rate-card price for this model and storage — ask the partner." },
@@ -192,7 +192,7 @@ test("stored words that asked staff to type a trade-in price are reworded on eve
   d.prepare(`UPDATE cases SET quote = ?, repaired_quote = ?, storage_quotes = ?, camera_check = ? WHERE id = ?`).run(JSON.stringify(quote), JSON.stringify(quote), JSON.stringify(chips), JSON.stringify(camera), c.id);
 
   // This case, and any other still holding them (the rename above wrote two of these sentences itself).
-  const changed = rewordQuoteTexts();
+  const changed = await rewordQuoteTexts();
   assert.ok(changed.includes(c.ref), changed.join(", "));
   const read = () => one<{ quote: string; repaired_quote: string; storage_quotes: string; camera_check: string }>(`SELECT quote, repaired_quote, storage_quotes, camera_check FROM cases WHERE id = ?`, c.id);
   const r = read();
@@ -210,7 +210,7 @@ test("stored words that asked staff to type a trade-in price are reworded on eve
   assert.equal(cam.overrides[0].reason, typed, "what a person typed is never touched");
   assert.doesNotMatch(JSON.stringify(r), /enter a quote\.|ask the partner\.|enter the partner's quote/);
   // Idempotent: the next boot finds nothing to change, and changes nothing.
-  assert.deepEqual(rewordQuoteTexts(), []);
+  assert.deepEqual(await rewordQuoteTexts(), []);
   assert.deepEqual(read(), r);
   assert.equal(count(`SELECT COUNT(*) n FROM audit WHERE action = 'seed.reworded_quote_texts' AND instr(detail, ?) > 0`, c.ref), 1, "audited once");
   assert.equal(count(`SELECT COUNT(*) n FROM cases WHERE instr(quote, 'enter a quote') > 0 OR instr(camera_check, 'enter the partner') > 0 OR instr(storage_quotes, 'ask the partner') > 0`), 0);
@@ -218,38 +218,39 @@ test("stored words that asked staff to type a trade-in price are reworded on eve
   assert.match(readFileSync(join(ROOT, "lib/server/seed.ts"), "utf8"), /retireOldQuotes\(\);[^]*?rewordQuoteTexts\(\);/);
 });
 
-test("the login moves to 'partner' only when nobody else has it", () => {
+test("the login moves to 'partner' only when nobody else has it", async () => {
   const d = db();
   const P = DEMO_PARTNER;
   d.prepare(`UPDATE orgs SET name = 'Oldbrand' WHERE id = ?`).run(P.orgId);
   d.prepare(`UPDATE users SET username = 'oldbrand' WHERE id = ?`).run(P.userId);
   d.prepare(`INSERT INTO users (id, org_id, store_id, username, name, role, password_hash, created_at) SELECT 'usr_taken', 'org_real', NULL, 'partner', 'Someone', 'org_admin', password_hash, created_at FROM users WHERE id = ?`).run(P.userId);
   d.prepare(`DELETE FROM meta WHERE key = 'renamed_demo_partner'`).run();
-  renameDemoPartner();
+  await renameDemoPartner();
   assert.equal(one<{ username: string }>(`SELECT username FROM users WHERE id = ?`, P.userId).username, "oldbrand");
   assert.equal(one<{ username: string }>(`SELECT username FROM users WHERE id = 'usr_taken'`).username, "partner");
   d.prepare(`DELETE FROM users WHERE id = 'usr_taken'`).run();
   d.prepare(`UPDATE users SET username = 'partner' WHERE id = ?`).run(P.userId);
 });
 
-test("the example cases an older first boot seeded are removed once — exactly those, with their holds and pickup; never a case staff or a test opened", () => {
+test("the example cases an older first boot seeded are removed once — exactly those, with their holds and pickup; never a case staff or a test opened", async () => {
   const d = db();
   const at = (store: string) => userNamed(store === "st_and" ? "advisor" : store === "st_kor" ? "advisor.kor" : "xc.advisor");
-  const make = (store: string, name: string, phone: string, demo: 0 | 1) => {
-    const c = cases.createCase(at(store), { customerName: name, customerPhone: phone });
+  const make = async (store: string, name: string, phone: string, demo: 0 | 1) => {
+    const c = await cases.createCase(at(store), { customerName: name, customerPhone: phone });
     d.prepare(`UPDATE cases SET demo = ? WHERE id = ?`).run(demo, c.id);
     return c;
   };
   // As the old first boot left them: every example case, a hold on the line for each, one settled pickup.
-  const seeded = SEEDED_EXAMPLE_CASES.map((e) => make(e.store, e.name, e.phone, 1));
+  const seeded = [];
+  for (const e of SEEDED_EXAMPLE_CASES) seeded.push(await make(e.store, e.name, e.phone, 1));
   for (const c of seeded) d.prepare(`INSERT INTO credit_ledger (store_id, case_id, kind, amount, note, at) VALUES (?, ?, 'hold', 10000, 'demo', '2026-10-10T00:00:00Z')`).run(c.storeId, c.id);
   d.prepare(`INSERT INTO pickups (id, ref, org_id, store_id, partner_id, status, demo, requested_at) VALUES ('pk_demo', 'PK-AND-0009', 'org_samsung_svc', 'st_and', ?, 'settled', 1, '2026-10-08T00:00:00Z')`).run(DEMO_PARTNER.orgId);
   d.prepare(`UPDATE cases SET pickup_id = 'pk_demo' WHERE id IN (?, ?)`).run(seeded[3].id, seeded[4].id);
   // What must stay: staff's cases with the same customer (demo = 0), an example customer at another
   // store, a flagged case with another customer, and a live pickup.
-  const staffSame = make("st_and", "Meera Iyer", "9820012345", 0);
-  const otherStore = make("st_kor", "Meera Iyer", "9820012345", 1);
-  const otherName = make("st_and", "Live test (Ammar)", "9820012345", 1);
+  const staffSame = await make("st_and", "Meera Iyer", "9820012345", 0);
+  const otherStore = await make("st_kor", "Meera Iyer", "9820012345", 1);
+  const otherName = await make("st_and", "Live test (Ammar)", "9820012345", 1);
   d.prepare(`INSERT INTO credit_ledger (store_id, case_id, kind, amount, note, at) VALUES ('st_and', ?, 'hold', 5000, 'real', '2026-10-10T00:00:00Z')`).run(staffSame.id);
   d.prepare(`INSERT INTO pickups (id, ref, org_id, store_id, partner_id, status, demo, requested_at) VALUES ('pk_live', 'PK-AND-0010', 'org_samsung_svc', 'st_and', ?, 'requested', 0, '2026-10-08T00:00:00Z')`).run(DEMO_PARTNER.orgId);
   // The made-up events the old first boot audited about them — and a real one that stays.
@@ -259,7 +260,7 @@ test("the example cases an older first boot seeded are removed once — exactly 
   auditRow.run("case.lock", "case", staffSame.id);
   d.prepare(`DELETE FROM meta WHERE key = 'removed_example_cases'`).run();
 
-  const removed = removeExampleCases();
+  const removed = await removeExampleCases();
 
   assert.deepEqual(removed, seeded.map((c) => c.ref).sort());
   assert.equal(removed.length, 11);
@@ -276,33 +277,38 @@ test("the example cases an older first boot seeded are removed once — exactly 
   assert.equal(count(`SELECT COUNT(*) n FROM audit WHERE entity_id = 'pk_demo'`), 0);
   assert.equal(count(`SELECT COUNT(*) n FROM audit WHERE entity_id = ? AND action = 'case.lock'`, staffSame.id), 1, "a real case's audit stays");
   // Once.
-  make("st_and", "Meera Iyer", "9820012345", 1);
-  assert.deepEqual(removeExampleCases(), []);
+  await make("st_and", "Meera Iyer", "9820012345", 1);
+  assert.deepEqual(await removeExampleCases(), []);
 });
 
-test("ids an older first boot gave the partner and its login move to today's, with every row that holds them — foreign keys intact", () => {
+test("ids an older first boot gave the partner and its login move to today's, with every row that holds them — foreign keys intact", async () => {
   const d = db();
   const P = DEMO_PARTNER;
   const OLD_ORG = "ptn_oldbrand";
   const OLD_USER = "usr_oldbrand";
   // Put the database back as an older first boot left it: the partner and its login under other ids, referenced around.
-  d.transaction(() => {
-    d.pragma("defer_foreign_keys = ON");
+  d.pragma("defer_foreign_keys = ON");
+  d.exec("BEGIN");
+  try {
     d.prepare(`UPDATE orgs SET partner_id = ? WHERE partner_id = ?`).run(OLD_ORG, P.orgId);
     d.prepare(`UPDATE users SET org_id = ? WHERE org_id = ?`).run(OLD_ORG, P.orgId);
     d.prepare(`UPDATE pickups SET partner_id = ? WHERE partner_id = ?`).run(OLD_ORG, P.orgId);
     d.prepare(`UPDATE orgs SET id = ? WHERE id = ?`).run(OLD_ORG, P.orgId);
     d.prepare(`UPDATE users SET id = ? WHERE id = ?`).run(OLD_USER, P.userId);
-  })();
+    d.exec("COMMIT");
+  } catch (e) {
+    d.exec("ROLLBACK");
+    throw e;
+  }
   d.prepare(`INSERT INTO pickups (id, ref, org_id, store_id, partner_id, status, demo, requested_at, requested_by) VALUES ('pk_ids', 'PK-AND-0011', 'org_samsung_svc', 'st_and', ?, 'requested', 0, '2026-10-08T00:00:00Z', 'usr_mgr_and')`).run(OLD_ORG);
   d.prepare(`INSERT INTO handoff_nonces (nonce_hash, user_id, next, expires_at) VALUES ('h1', ?, '/partner', '2026-10-20T00:00:00Z')`).run(OLD_USER);
   d.prepare(`INSERT INTO audit (at, user_id, org_id, action, entity, entity_id, detail) VALUES ('2026-10-10T00:00:00Z', ?, ?, 'pickup.schedule', 'org', ?, ?)`).run(OLD_USER, OLD_ORG, OLD_ORG, JSON.stringify({ partnerId: OLD_ORG }));
   d.prepare(`DELETE FROM meta WHERE key = 'renamed_demo_partner_ids'`).run();
-  assert.equal(demoPartnerId(), OLD_ORG, "found from the programme, whatever its id");
+  assert.equal(await demoPartnerId(), OLD_ORG, "found from the programme, whatever its id");
 
-  renameDemoPartnerIds();
+  await renameDemoPartnerIds();
 
-  assert.equal(demoPartnerId(), P.orgId);
+  assert.equal(await demoPartnerId(), P.orgId);
   assert.equal(count(`SELECT COUNT(*) n FROM orgs WHERE id = ?`, OLD_ORG), 0);
   assert.equal(one<{ id: string }>(`SELECT id FROM users WHERE username = 'partner'`).id, P.userId);
   assert.equal(one<{ partner_id: string }>(`SELECT partner_id FROM pickups WHERE id = 'pk_ids'`).partner_id, P.orgId);
@@ -310,16 +316,16 @@ test("ids an older first boot gave the partner and its login move to today's, wi
   const a = one<{ user_id: string; org_id: string; entity_id: string; detail: string }>(`SELECT user_id, org_id, entity_id, detail FROM audit WHERE action = 'pickup.schedule' ORDER BY id DESC LIMIT 1`);
   assert.deepEqual([a.user_id, a.org_id, a.entity_id, JSON.parse(a.detail).partnerId], [P.userId, P.orgId, P.orgId, P.orgId]);
   assert.deepEqual(d.prepare(`PRAGMA foreign_key_check`).all(), []);
-  assert.equal(authenticate("partner", "swapup2026")?.id, P.userId, "the login still signs in");
-  assert.equal(partnerMode(P.orgId).partnerName, "Buyback Partner (demo)");
+  assert.equal((await authenticate("partner", "swapup2026"))?.id, P.userId, "the login still signs in");
+  assert.equal((await partnerMode(P.orgId)).partnerName, "Buyback Partner (demo)");
   // Once; and never onto an id someone else already has.
-  renameDemoPartnerIds();
-  assert.equal(demoPartnerId(), P.orgId);
+  await renameDemoPartnerIds();
+  assert.equal(await demoPartnerId(), P.orgId);
   d.prepare(`DELETE FROM pickups WHERE id = 'pk_ids'`).run();
   d.prepare(`DELETE FROM handoff_nonces WHERE nonce_hash = 'h1'`).run();
 });
 
-test("test cases still on a quote from a retired source: relabelled, the old caveat and chips gone, a LOCKED one cancelled with its hold released — once, test programmes only", () => {
+test("test cases still on a quote from a retired source: relabelled, the old caveat and chips gone, a LOCKED one cancelled with its hold released — once, test programmes only", async () => {
   const d = db();
   const OLD_KIND = "sample"; // the older build's illustrative card (a test may spell it; the app never does)
   const OLD_LABEL = "SAMPLE rate card — illustrative values, not the partner's prices";
@@ -353,34 +359,34 @@ test("test cases still on a quote from a retired source: relabelled, the old cav
   const adv = userNamed("advisor");
 
   // 00028-like: locked at the store, holding credit on the old price.
-  const locked = cases.createCase(adv, { customerName: "Retired lock" });
+  const locked = await cases.createCase(adv, { customerName: "Retired lock" });
   put(locked.id, "locked");
   hold(locked.storeId, locked.id);
   // 00017-like: closed at the counter (repair chosen) — history.
-  const history = cases.createCase(adv, { customerName: "Retired history" });
+  const history = await cases.createCase(adv, { customerName: "Retired history" });
   put(history.id, "repair_chosen");
   // Already in a pickup: can't be cancelled from here — named for the owner, hold untouched.
-  const inPickup = cases.createCase(adv, { customerName: "Retired in pickup" });
+  const inPickup = await cases.createCase(adv, { customerName: "Retired in pickup" });
   put(inPickup.id, "in_pickup");
   hold(inPickup.storeId, inPickup.id);
   // An open case whose storage chips the older build priced off its card.
-  const chips = cases.createCase(adv, { customerName: "Retired chips" });
+  const chips = await cases.createCase(adv, { customerName: "Retired chips" });
   d.prepare(`UPDATE cases SET storage_quotes = ? WHERE id = ?`).run(JSON.stringify([{ variant: "256GB", amount: 18_800, reason: null, [OLD_KIND]: true }]), chips.id);
   // Must stay as they are: a locked case on the partner's own card, and a LIVE programme's case on a retired source.
-  const own = cases.createCase(adv, { customerName: "Own card lock" });
+  const own = await cases.createCase(adv, { customerName: "Own card lock" });
   const ownQuote = { ...oldQuote(17_000), source: { kind: "partner_ratecard", label: "Partner card Oct", effectiveFrom: "2026-10-01" } };
   put(own.id, "locked", { quote: ownQuote, repaired: ownQuote });
   hold(own.storeId, own.id);
   d.prepare(`UPDATE orgs SET demo = 0 WHERE id = 'org_xc'`).run();
-  const live = cases.createCase(userNamed("xc.advisor"), { customerName: "Live programme" });
+  const live = await cases.createCase(userNamed("xc.advisor"), { customerName: "Live programme" });
   put(live.id, "locked");
   hold(live.storeId, live.id);
   const ledgerBefore = count(`SELECT COUNT(*) n FROM credit_ledger`);
   d.prepare(`DELETE FROM meta WHERE key = 'retired_test_quotes'`).run();
 
-  let r: ReturnType<typeof retireOldQuotes>;
+  let r: Awaited<ReturnType<typeof retireOldQuotes>>;
   try {
-    r = retireOldQuotes();
+    r = await retireOldQuotes();
   } finally {
     d.prepare(`UPDATE orgs SET demo = 1 WHERE id = 'org_xc'`).run();
   }
@@ -412,7 +418,7 @@ test("test cases still on a quote from a retired source: relabelled, the old cav
   assert.deepEqual(JSON.parse(L.decision).caveats, [KEPT_CAVEAT]);
   assert.equal(JSON.parse(L.decision).recommendation, "trade_in", "the rest of the stored answer is untouched");
   // What the counter, the receipt and the apps read for it.
-  const view = cases.getCase(userNamed("manager"), locked.id);
+  const view = await cases.getCase(userNamed("manager"), locked.id);
   assert.equal(view.status, "cancelled");
   assert.equal(quoteSourceLabel(view.quote?.source), RETIRED_QUOTE_LABEL);
   assert.equal(view.quoteExpired, false, "a closed case isn't re-priced");
@@ -441,17 +447,17 @@ test("test cases still on a quote from a retired source: relabelled, the old cav
 
   // Once.
   put(history.id, "repair_chosen");
-  assert.deepEqual(retireOldQuotes(), { relabelled: [], cancelled: [], history: [] });
+  assert.deepEqual(await retireOldQuotes(), { relabelled: [], cancelled: [], history: [] });
   assert.equal(JSON.parse(one<{ quote: string }>(`SELECT quote FROM cases WHERE id = ?`, history.id).quote).source.label, OLD_LABEL);
   // …but whatever is stored, a retired source is shown as a retired test quote (the screens use quoteSourceLabel).
   assert.equal(quoteSourceLabel(JSON.parse(one<{ quote: string }>(`SELECT quote FROM cases WHERE id = ?`, history.id).quote).source), RETIRED_QUOTE_LABEL);
 });
 
-test("never throws on boot: a case it can't change is logged and skipped, the rest go on", () => {
+test("never throws on boot: a case it can't change is logged and skipped, the rest go on", async () => {
   const d = db();
   const adv = userNamed("advisor");
-  const bad = cases.createCase(adv, { customerName: "Odd ledger" });
-  const ok = cases.createCase(adv, { customerName: "Plain history" });
+  const bad = await cases.createCase(adv, { customerName: "Odd ledger" });
+  const ok = await cases.createCase(adv, { customerName: "Plain history" });
   const q = JSON.stringify({ status: "priced", amount: 9_000, lines: [], source: { kind: "partner_live", label: "Old live quote" }, partnerRef: null });
   // Locked, but the ledger can't take the release (a hold on another store's line): the ledger check refuses.
   d.prepare(`UPDATE cases SET status = 'locked', quote = ?, trade_value = 9000, locked_at = '2026-10-12T00:00:00Z' WHERE id = ?`).run(q, bad.id);
@@ -462,9 +468,9 @@ test("never throws on boot: a case it can't change is logged and skipped, the re
   const errs: string[] = [];
   const origErr = console.error;
   console.error = (...a: unknown[]) => void errs.push(a.map(String).join(" "));
-  let r: ReturnType<typeof retireOldQuotes>;
+  let r: Awaited<ReturnType<typeof retireOldQuotes>>;
   try {
-    r = retireOldQuotes();
+    r = await retireOldQuotes();
   } finally {
     console.error = origErr;
   }

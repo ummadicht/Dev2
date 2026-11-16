@@ -40,6 +40,7 @@ export default async function CasePage({ params, searchParams }: { params: Promi
   }
 
   const tm = view.device ? await getTradeModel(view.device.modelId) : null;
+  const rawVariants = tm ? parseJson<unknown>(tm.variants, []) : [];
   const initialModel: ModelOption | null = tm
     ? {
         id: tm.id,
@@ -48,7 +49,7 @@ export default async function CasePage({ params, searchParams }: { params: Promi
         series: tm.series,
         releaseYear: tm.release_year,
         supportEndYear: tm.support_end_year,
-        variants: parseJson<string[]>(tm.variants, []),
+        variants: Array.isArray(rawVariants) ? (rawVariants as string[]) : [],
       }
     : null;
 

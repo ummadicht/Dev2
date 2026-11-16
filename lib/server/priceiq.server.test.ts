@@ -16,7 +16,6 @@ import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync } from "node
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import Database from "better-sqlite3";
 import { startFakePriceiq, S23U_256, type FakePriceiq } from "./testing/fakePriceiq.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "swapup-priceiq-"));
@@ -24,30 +23,6 @@ const DB_FILE = join(dir, "test.db");
 process.env.SWAPUP_DB = DB_FILE;
 process.env.GRADEIQ_ENABLED = "0";
 for (const k of Object.keys(process.env)) if (k.startsWith("PRICEIQ_")) delete process.env[k];
-
-const { MIGRATIONS } = await import("./db.ts");
-
-/* ── a database as an older SwapUp left it: schema 14, the bundled snapshot imported, the sample card on file ── */
-{
-  const old = new Database(DB_FILE);
-  old.exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
-  for (const step of MIGRATIONS.slice(0, 14)) old.exec(step);
-  old.prepare(`INSERT INTO meta (key, value) VALUES ('schema_version', '14')`).run();
-  old.prepare(`INSERT INTO meta (key, value) VALUES ('priceiq_vendor_sell', '{"file":"x.csv"}')`).run();
-  old.prepare(`INSERT INTO meta (key, value) VALUES ('priceiq_keep_me', 'unrelated')`).run();
-  const ins = old.prepare(`INSERT INTO market_listings (source, model_id, variant, grade, price, week, listed_as) VALUES (?,?,?,?,?,?,?)`);
-  ins.run("priceiq:vendor_in_sell", "galaxy-s23-ultra", "256GB", "Superb", 57_099, "2026-W35", "Samsung Galaxy S23 Ultra 256GB");
-  ins.run("priceiq:vendor_in_sell", "galaxy-s23-ultra", "256GB", "Good", 51_399, "2026-W35", "Samsung Galaxy S23 Ultra 256GB");
-  old.prepare(`INSERT INTO orgs (id, name, kind, settings, created_at) VALUES ('ptn_x', 'Partner X', 'partner', '{}', '2026-10-01')`).run();
-  const card = (id: string, kind: string) =>
-    old.prepare(`INSERT INTO rate_cards (id, partner_id, data, active, created_at) VALUES (?, 'ptn_x', ?, 1, '2026-10-01')`).run(id, JSON.stringify({ source: { kind, label: id, effectiveFrom: "2026-10-01" } }));
-  card("rc_illustrative", "sample");
-  card("rc_partner", "partner_ratecard");
-  const tm = old.prepare(`INSERT INTO trade_models (id, brand, model, variants, source) VALUES (?, ?, ?, '["128GB"]', ?)`);
-  tm.run("pixel-7", "Google", "Pixel 7", JSON.stringify({ kind: "sample", label: "Release year approximate" }));
-  tm.run("galaxy-s23", "Samsung", "Galaxy S23", JSON.stringify({ kind: "oem_public", label: "Samsung" }));
-  old.close();
-}
 
 const origWarn = console.warn;
 const warnings: string[] = [];
@@ -83,16 +58,20 @@ const clear = () => {
 };
 const ageCache = (ms: number) => db().prepare(`UPDATE market_listings SET fetched_at = ?`).run(new Date(Date.now() - ms).toISOString());
 
-test("migration 15: market_listings becomes the cache — the old snapshot rows and their import record go; sample data goes; nothing else is touched", () => {
+test("market_listings holds the PriceIQ cache columns and ignores legacy vendor snapshot rows", async () => {
   const cols = (db().prepare(`PRAGMA table_info(market_listings)`).all() as { name: string }[]).map((c) => c.name);
   assert.ok(["fetched_at", "observed_at", "points"].every((c) => cols.includes(c)), cols.join());
-  assert.equal((db().prepare(`SELECT COUNT(*) n FROM market_listings`).get() as { n: number }).n, 0, "the snapshot's rows are deleted");
-  assert.equal(db().prepare(`SELECT 1 FROM meta WHERE key = 'priceiq_vendor_sell'`).get(), undefined, "its import record too");
-  assert.ok(db().prepare(`SELECT 1 FROM meta WHERE key = 'priceiq_keep_me'`).get(), "an unrelated meta row stays");
-  assert.deepEqual((db().prepare(`SELECT id FROM rate_cards ORDER BY id`).all() as { id: string }[]).map((r) => r.id), ["rc_partner"], "only the partner's own card stays");
-  const kinds = Object.fromEntries((db().prepare(`SELECT id, json_extract(source, '$.kind') k FROM trade_models`).all() as { id: string; k: string }[]).map((r) => [r.id, r.k]));
-  assert.deepEqual(kinds, { "pixel-7": "approximate", "galaxy-s23": "oem_public" });
-  assert.equal((db().prepare(`SELECT value FROM meta WHERE key = 'schema_version'`).get() as { value: string }).value, String(MIGRATIONS.length));
+  db().prepare(`INSERT INTO market_listings (source, model_id, variant, grade, price, week, listed_as) VALUES (?,?,?,?,?,?,?)`).run(
+    "priceiq:vendor_in_sell",
+    "galaxy-s23-ultra",
+    "256GB",
+    "Superb",
+    57_099,
+    "2026-W35",
+    "Samsung Galaxy S23 Ultra 256GB"
+  );
+  assert.equal(await readCache("galaxy-s23-ultra", "256GB"), null, "legacy snapshot rows are never read as PriceIQ cache");
+  db().prepare(`DELETE FROM market_listings`).run();
 });
 
 test("the snapshot file is gone and nothing reads one", () => {
@@ -124,7 +103,7 @@ test("no key: no request is made and there is no price — even with an answer o
   disconnect();
   const r = await freshMarket(S23U);
   assert.deepEqual(r, { answer: null, why: NOT_CONNECTED });
-  assert.deepEqual(cachedMarket(S23U), { answer: null, why: NOT_CONNECTED });
+  assert.deepEqual(await cachedMarket(S23U), { answer: null, why: NOT_CONNECTED });
   assert.equal(fake.calls.length, 1);
 });
 
@@ -154,7 +133,7 @@ test("a quote asks PriceIQ: the bearer key, the brand-less model, storage in GB,
   assert.equal(rows.length, 4);
   assert.ok(rows.every((x) => x.source === "priceiq" && x.fetched_at && x.observed_at && x.listed_as === "Samsung Galaxy S23 Ultra 256GB"));
   assert.doesNotMatch(JSON.stringify(rows), /some_partner_feed|Some Partner/);
-  assert.deepEqual(readCache("galaxy-s23-ultra", "256GB")?.rows.length, 4);
+  assert.deepEqual((await readCache("galaxy-s23-ultra", "256GB"))?.rows.length, 4);
   // The contract's acceptance check: a flawless S23 Ultra 256GB is priced from ₹53,499 (Superb).
   const s = marketSell({ answer: r.answer, condition: { screen: "flawless", body: "flawless" }, label: "Galaxy S23 Ultra 256GB", asOf: new Date().toISOString() });
   assert.equal(s.why === null && s.listing, 53_499);
@@ -165,24 +144,24 @@ test("fresh for an hour: no second ask inside it; the next request after it asks
   connect();
   await freshMarket(S23U);
   await freshMarket(S23U);
-  cachedMarket(S23U);
+  await cachedMarket(S23U);
   assert.equal(fake.calls.length, 1, "within the hour, the kept answer");
   ageCache(PRICEIQ_FRESH_MS + 60_000);
   await freshMarket(S23U);
   assert.equal(fake.calls.length, 2, "over an hour old: asked again, and waited for");
-  const fetched = Date.parse(readCache("galaxy-s23-ultra", "256GB")!.fetchedAt);
+  const fetched = Date.parse((await readCache("galaxy-s23-ultra", "256GB"))!.fetchedAt);
   assert.ok(Date.now() - fetched < 60_000, "the new answer replaced the old");
 });
 
 test("a page view never waits: it reads what is kept and refreshes it in the background", async () => {
   clear();
   connect();
-  const first = cachedMarket(S23U);
+  const first = await cachedMarket(S23U);
   assert.equal(first.answer, null, "nothing kept yet — no price on this view, never a guess");
   assert.equal(first.why, "No refurbished market price yet.");
-  for (let i = 0; i < 50 && !readCache("galaxy-s23-ultra", "256GB"); i++) await new Promise((r) => setTimeout(r, 20));
+  for (let i = 0; i < 50 && !(await readCache("galaxy-s23-ultra", "256GB")); i++) await new Promise((r) => setTimeout(r, 20));
   assert.equal(fake.calls.length, 1);
-  assert.equal(cachedMarket(S23U).answer?.rows.length, 4, "the next view has it");
+  assert.equal((await cachedMarket(S23U)).answer?.rows.length, 4, "the next view has it");
 });
 
 test("concurrent asks for one phone share one request", async () => {
@@ -224,7 +203,7 @@ test("PriceIQ down: the last good answer, labelled 'PriceIQ unreachable' — and
   // A minute's grace before the next ask: a page of storage chips doesn't wait once per size.
   await freshMarket(S23U);
   assert.equal(fake.calls.length, 2);
-  assert.equal(cachedMarket(S23U).answer?.unreachable, true, "page views say it too");
+  assert.equal((await cachedMarket(S23U)).answer?.unreachable, true, "page views say it too");
   // Never answered at all and down: no price, with why.
   const fresh = await freshMarket({ modelId: "galaxy-s23-ultra", variant: "512GB", brand: "Samsung", model: "Galaxy S23 Ultra" });
   assert.equal(fresh.answer, null);
@@ -243,7 +222,7 @@ test("a wrong key is refused, not cached; the server log gets its last 4 charact
   // `why` reaches cases.quote (priceiqWhy), the counter's trace and the customer's answer: plain words only.
   assert.equal(r.why, "No refurbished market price yet — PriceIQ refused SwapUp's key (HTTP 401).");
   assert.doesNotMatch(r.why ?? "", /9z9z|SECRETPART|pk_|…|key …/);
-  assert.doesNotMatch(cachedMarket(S23U).why ?? "", /9z9z|SECRETPART|pk_|…/, "page views say the same");
+  assert.doesNotMatch((await cachedMarket(S23U)).why ?? "", /9z9z|SECRETPART|pk_|…/, "page views say the same");
   // …and with an answer on file, the unreachable label carries no key either.
   connect();
   resetPriceiqState();
@@ -260,7 +239,7 @@ test("a 404 that isn't PriceIQ's own (an HTML page: wrong base path, PriceIQ rol
   clear();
   connect();
   await freshMarket(S23U);
-  const kept = readCache("galaxy-s23-ultra", "256GB");
+  const kept = await readCache("galaxy-s23-ultra", "256GB");
   assert.equal(kept?.rows.length, 4);
   ageCache(PRICEIQ_FRESH_MS + 60_000);
   fake.mode = "html404";
@@ -268,7 +247,7 @@ test("a 404 that isn't PriceIQ's own (an HTML page: wrong base path, PriceIQ rol
   assert.equal(fake.calls.length, 2, "asked");
   assert.equal(r.answer?.unreachable, true, "labelled unreachable");
   assert.equal(r.answer?.rows.length, 4, "the last good answer, not 'no price'");
-  assert.equal(readCache("galaxy-s23-ultra", "256GB")?.rows.length, 4, "the cache is not overwritten");
+  assert.equal((await readCache("galaxy-s23-ultra", "256GB"))?.rows.length, 4, "the cache is not overwritten");
   assert.equal((db().prepare(`SELECT COUNT(*) n FROM market_listings WHERE grade = ''`).get() as { n: number }).n, 0, "no 'none' marker written");
   const s = marketSell({ answer: r.answer, condition: { screen: "flawless", body: "flawless" }, label: "Galaxy S23 Ultra 256GB", asOf: new Date().toISOString() });
   assert.ok(s.why === null && s.listing === 53_499 && /PriceIQ unreachable, last answer/.test(s.note ?? ""), JSON.stringify(s));
