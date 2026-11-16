@@ -130,17 +130,25 @@ export default async function ReceiptPage({
   const org = await getOrg(v.orgId);
   const test = !!org?.demo;
   const priceiq = v.quote?.source.kind === "priceiq";
-  const wePay = v.tradeValue === null ? null : v.tradeValue + (v.premiumValue ?? 0);
+  const wePay =
+    v.tradeValue !== null
+      ? v.tradeValue + (v.premiumValue ?? 0)
+      : (v.offer?.swap.wePay ?? null);
   const marketLine = v.offer?.answer.lines.find((l) => l.key === "market") ?? null;
   const marketWords = marketLine ? (marketLine.text ? (marketLine.note ? `${marketLine.text} · ${marketLine.note}` : marketLine.text) : null) : null;
   const b = v.bonus;
-  const bonusBp = b ? (b.override?.bp ?? b.bp) : null;
+  const bonusBp = b ? (b.override?.bp ?? b.bp) : (v.offer?.swap.bonusBp ?? null);
+  const bonusVal = v.bonusValue ?? v.offer?.swap.bonus ?? 0;
+  const upgradeLabel = v.upgrade?.label ?? v.offer?.swap.newPhone?.label ?? "—";
+  const upgradePrice = v.upgrade?.price ?? v.offer?.swap.newPhone?.price ?? null;
+  const amountPayable = v.payable ?? v.offer?.swap.customerPays ?? rzpSummary.swap.totalPayable;
   const cond = conditionSummary(v.condition);
   const report = await reportRow(u, v.id);
 
+  const hasSwapPayment = paymentsToShow.some((p) => p.journey === "swap");
   const isRepairReceipt =
     v.status === "repair_chosen" ||
-    (!v.lockedAt && hasRepairQuote) ||
+    (!v.lockedAt && !hasSwapPayment && hasRepairQuote) ||
     (paymentsToShow.length > 0 && paymentsToShow.every((p) => p.journey === "repair"));
 
   const receiptTitle = isRepairReceipt
@@ -276,7 +284,7 @@ export default async function ReceiptPage({
                   <td className="py-2 text-right num font-bold text-up whitespace-nowrap">− {inr(rzpSummary.repair.paidAmount)}</td>
                 </tr>
                 <tr>
-                  <td className="py-3 pr-3 text-[16px] font-[760]">Remaining balance due on pickup</td>
+                  <td className="py-3 pr-3 text-[16px] font-[760]">Balance due</td>
                   <td className="py-3 text-right num text-[20px] font-[780] whitespace-nowrap">
                     {inr(rzpSummary.repair.remainingBalance)}
                   </td>
@@ -294,9 +302,9 @@ export default async function ReceiptPage({
               <tbody>
                 <tr className="border-b border-line">
                   <td className="py-2 pr-3">
-                    <div className="font-semibold">New phone: {v.upgrade?.label ?? "—"}</div>
+                    <div className="font-semibold">New phone: {upgradeLabel}</div>
                   </td>
-                  <td className="py-2 text-right num whitespace-nowrap">{inr(v.upgrade?.price)}</td>
+                  <td className="py-2 text-right num whitespace-nowrap">{inr(upgradePrice)}</td>
                 </tr>
                 <tr className="border-b border-line">
                   <td className="py-2 pr-3">
@@ -315,11 +323,11 @@ export default async function ReceiptPage({
                       </div>
                     ) : null}
                   </td>
-                  <td className="py-2 text-right num whitespace-nowrap">− {inr(v.bonusValue ?? 0)}</td>
+                  <td className="py-2 text-right num whitespace-nowrap">− {inr(bonusVal)}</td>
                 </tr>
                 <tr>
                   <td className="py-3 pr-3 text-[16px] font-[760]">Amount payable</td>
-                  <td className="py-3 text-right num text-[22px] font-[780] whitespace-nowrap">{inr(v.payable ?? rzpSummary.swap.totalPayable)}</td>
+                  <td className="py-3 text-right num text-[22px] font-[780] whitespace-nowrap">{inr(amountPayable)}</td>
                 </tr>
               </tbody>
             </table>
@@ -377,7 +385,7 @@ export default async function ReceiptPage({
             {isRepairReceipt ? (
               <>
                 <li>Repair spare parts are priced as per the published OEM service schedule for the model above.</li>
-                <li>If paid via Razorpay Part Advance, the remaining balance is payable upon repair completion and device handover.</li>
+                <li>Any Razorpay payment completed for this repair is recorded above against the total bill.</li>
                 <li>Only the ID&apos;s last four characters are recorded.</li>
               </>
             ) : (

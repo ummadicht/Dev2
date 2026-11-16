@@ -141,6 +141,18 @@ export const LockForm = forwardRef<HTMLInputElement, { ops: CaseOps }>(function 
       }
     >
       <form onSubmit={submit} className="space-y-5">
+        {view.offer?.swap.customerPays && view.offer.swap.customerPays > 0 ? (
+          <RazorpayPaymentPanel
+            caseId={view.id}
+            caseRef={view.ref}
+            mode="swap"
+            repairAmount={view.offer?.repair.amount ?? null}
+            swapAmount={view.offer.swap.customerPays}
+            customerName={name || view.customer?.name}
+            customerPhone={digits || view.customer?.phone}
+            redirectToBillOnPaid={true}
+          />
+        ) : null}
 
         {askImei ? (
           <div>
@@ -339,18 +351,6 @@ export const LockForm = forwardRef<HTMLInputElement, { ops: CaseOps }>(function 
               ))}
             </ul>
           </Banner>
-        ) : null}
-
-        {view.offer?.swap.customerPays && view.offer.swap.customerPays > 0 ? (
-          <RazorpayPaymentPanel
-            caseId={view.id}
-            caseRef={view.ref}
-            mode="swap"
-            repairAmount={view.offer?.repair.amount ?? null}
-            swapAmount={view.offer.swap.customerPays}
-            customerName={name || view.customer?.name}
-            customerPhone={digits || view.customer?.phone}
-          />
         ) : null}
 
         <button className="btn btn-up w-full sm:w-auto" disabled={!canSubmit}>

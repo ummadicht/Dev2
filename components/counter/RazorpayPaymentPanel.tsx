@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/client/api";
 import { Banner, ErrorText, Money } from "@/components/ui";
@@ -61,6 +62,7 @@ export function RazorpayPaymentPanel({
   swapAmount,
   customerName,
   customerPhone,
+  redirectToBillOnPaid = true,
   onPaid,
 }: {
   caseId: string;
@@ -71,14 +73,15 @@ export function RazorpayPaymentPanel({
   swapAmount: number | null;
   customerName?: string | null;
   customerPhone?: string | null;
+  /** Automatically open the generated bill (/cases/[id]/receipt) once payment is confirmed */
+  redirectToBillOnPaid?: boolean;
   onPaid?: (payment: RazorpayPaymentRow, summary: CaseRazorpaySummary) => void;
 }) {
+  const router = useRouter();
   const [summary, setSummary] = useState<CaseRazorpaySummary | null>(null);
   const [activeTab, setActiveTab] = useState<RazorpayJourney>(
     mode === "swap" ? "swap" : "repair"
   );
-  const [repairOption, setRepairOption] = useState<"part_advance" | "full">("part_advance");
-  const [customAdvance, setCustomAdvance] = useState<string>("");
   const [swapOption, setSwapOption] = useState<"direct" | "emi">("direct");
   const [selectedEmiMonths, setSelectedEmiMonths] = useState<number>(6);
   const [busy, setBusy] = useState(false);
@@ -107,9 +110,6 @@ export function RazorpayPaymentPanel({
     try {
       const s = await api<CaseRazorpaySummary>(`/api/cases/${encodeURIComponent(caseId)}/razorpay`);
       setSummary(s);
-      if (s.repair.suggestedAdvance && !customAdvance) {
-        setCustomAdvance(String(s.repair.suggestedAdvance));
-      }
       if (!receiptEmail) {
         for (const p of s.payments) {
           const n = parseReceiptEmailNote(p.notes);
@@ -122,7 +122,7 @@ export function RazorpayPaymentPanel({
     } catch (e) {
       setErr((e as Error).message);
     }
-  }, [caseId, customAdvance, receiptEmail]);
+  }, [caseId, receiptEmail]);
 
   useEffect(() => {
     void refresh();
@@ -138,10 +138,6 @@ export function RazorpayPaymentPanel({
   const repairPaid = summary?.repair.paidAmount ?? 0;
   const repairRemaining =
     effectiveRepairTotal !== null ? Math.max(0, effectiveRepairTotal - repairPaid) : 0;
-  const defaultAdvance =
-    effectiveRepairTotal !== null && effectiveRepairTotal > 0
-      ? Math.max(100, Math.min(effectiveRepairTotal - 10, Math.round((effectiveRepairTotal * 0.3) / 10) * 10))
-      : 0;
 
   const swapPaid = summary?.swap.paidAmount ?? 0;
   const swapRemaining =
@@ -151,11 +147,18 @@ export function RazorpayPaymentPanel({
   const chosenEmiPlan =
     emiPlans.find((p) => p.months === selectedEmiMonths) ?? emiPlans[1] ?? emiPlans[0] ?? null;
 
+  function handlePaymentConfirmed(payment: RazorpayPaymentRow, nextSummary: CaseRazorpaySummary) {
+    setSummary(nextSummary);
+    onPaid?.(payment, nextSummary);
+    if (redirectToBillOnPaid) {
+      router.push(`/cases/${encodeURIComponent(caseId)}/receipt?paymentId=${encodeURIComponent(payment.id)}`);
+    }
+  }
+
   async function startCheckout(journey: RazorpayJourney, paymentPlan: RazorpayPaymentPlan) {
     setErr(null);
     setBusy(true);
     try {
-      const advNum = Number(customAdvance || defaultAdvance);
       const res = await api<{
         payment: RazorpayPaymentRow;
         keyId: string;
@@ -166,7 +169,6 @@ export function RazorpayPaymentPanel({
           action: "create_order",
           journey,
           paymentPlan,
-          customAdvanceAmount: paymentPlan === "repair_part_advance" ? advNum : null,
           overrideTotalAmount: journey === "repair" ? effectiveRepairTotal : effectiveSwapTotal,
           emiMonths: paymentPlan === "swap_emi" ? selectedEmiMonths : null,
           customerName,
@@ -209,8 +211,7 @@ export function RazorpayPaymentPanel({
                   paymentMethod: paymentPlan === "swap_emi" ? "emi" : "razorpay",
                 },
               });
-              setSummary(verified.summary);
-              onPaid?.(verified.payment, verified.summary);
+              handlePaymentConfirmed(verified.payment, verified.summary);
             },
           });
           rzp.open();
@@ -248,9 +249,8 @@ export function RazorpayPaymentPanel({
           paymentMethod: selectedSimMethod,
         },
       });
-      setSummary(verified.summary);
       setActiveOrder(null);
-      onPaid?.(verified.payment, verified.summary);
+      handlePaymentConfirmed(verified.payment, verified.summary);
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -365,146 +365,22 @@ export function RazorpayPaymentPanel({
                 </div>
               </div>
             </Banner>
-          ) : repairPaid > 0 && repairRemaining > 0 ? (
-            <div className="rounded-[10px] border border-line bg-surface p-3.5 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <span className="pill pill-up">✓ Part Advance Paid: {inr(repairPaid)}</span>
-                  <div className="text-[14px] text-ink mt-1.5">
-                    Total repair: <strong className="num">{inr(effectiveRepairTotal)}</strong> · Remaining balance due:{" "}
-                    <strong className="num text-fix">{inr(repairRemaining)}</strong>
-                  </div>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-ghost"
-                    onClick={() => {
-                      setEmailComposerFor("all");
-                      setErr(null);
-                    }}
-                  >
-                    ✉ Email Advance Receipt
-                  </button>
-                  <Link
-                    href={`/cases/${caseId}/receipt?autoprint=1`}
-                    className="btn btn-sm"
-                  >
-                    🖨 Print Advance Receipt
-                  </Link>
-                  <button
-                    type="button"
-                    className="btn btn-fix btn-sm"
-                    disabled={busy}
-                    onClick={() => startCheckout("repair", "repair_remaining")}
-                  >
-                    {busy ? "Opening Razorpay…" : `Pay Remaining ${inr(repairRemaining)} via Razorpay`}
-                  </button>
-                </div>
-              </div>
-            </div>
           ) : (
-            <div className="space-y-3">
-              <div className="grid sm:grid-cols-2 gap-2.5">
-                {/* Option 1: Part Advance + Remaining */}
-                <label
-                  className={`flex flex-col justify-between rounded-[10px] border p-3 cursor-pointer transition-colors ${
-                    repairOption === "part_advance"
-                      ? "border-[color:var(--ink)] bg-surface"
-                      : "border-line bg-surface/60"
-                  }`}
-                >
-                  <div className="flex items-start gap-2.5">
-                    <input
-                      type="radio"
-                      name={`rzp-repair-${caseId}`}
-                      className="mt-1"
-                      checked={repairOption === "part_advance"}
-                      onChange={() => setRepairOption("part_advance")}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[14px] font-[720] text-ink">
-                        Option 1: Part Advance + Remaining
-                      </div>
-                      <p className="text-[12.5px] text-ink-2 mt-0.5 leading-snug">
-                        Pay advance now to book the repair, and pay the remaining balance via Razorpay after repair completion.
-                      </p>
-                    </div>
-                  </div>
-                  {repairOption === "part_advance" && (
-                    <div className="mt-3 pt-2.5 border-t border-line space-y-2">
-                      <div className="flex items-center justify-between gap-2 text-[13px]">
-                        <span className="text-ink-2 font-medium">Advance now (₹):</span>
-                        <input
-                          type="number"
-                          className="input num !min-h-[34px] !py-1 !px-2.5 max-w-[120px] text-right font-semibold"
-                          min={1}
-                          max={Math.max(1, effectiveRepairTotal - 1)}
-                          value={customAdvance || String(defaultAdvance)}
-                          onChange={(e) => setCustomAdvance(e.target.value)}
-                        />
-                      </div>
-                      <div className="flex items-center justify-between text-[12.5px] text-muted">
-                        <span>Remaining on completion:</span>
-                        <span className="num font-semibold text-ink">
-                          {inr(Math.max(0, effectiveRepairTotal - Number(customAdvance || defaultAdvance)))}
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                </label>
-
-                {/* Option 2: Full Repair Payment */}
-                <label
-                  className={`flex flex-col justify-between rounded-[10px] border p-3 cursor-pointer transition-colors ${
-                    repairOption === "full"
-                      ? "border-[color:var(--ink)] bg-surface"
-                      : "border-line bg-surface/60"
-                  }`}
-                >
-                  <div className="flex items-start gap-2.5">
-                    <input
-                      type="radio"
-                      name={`rzp-repair-${caseId}`}
-                      className="mt-1"
-                      checked={repairOption === "full"}
-                      onChange={() => setRepairOption("full")}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[14px] font-[720] text-ink">
-                        Option 2: Full Payment (100%)
-                      </div>
-                      <p className="text-[12.5px] text-ink-2 mt-0.5 leading-snug">
-                        Pay the complete repair quote of <strong className="num">{inr(effectiveRepairTotal)}</strong> upfront via Razorpay.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-3 pt-2.5 border-t border-line flex items-center justify-between text-[13px]">
-                    <span className="text-ink-2">Payable now:</span>
-                    <strong className="num text-ink">{inr(effectiveRepairTotal)}</strong>
-                  </div>
-                </label>
+            <div className="rounded-[10px] border border-line bg-surface p-3.5 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-[14px] font-[720] text-ink">Full Repair Payment</div>
+                <p className="text-[12.5px] text-ink-2 mt-0.5 leading-snug">
+                  Pay the complete repair quote of <strong className="num">{inr(repairRemaining)}</strong> via Razorpay.
+                </p>
               </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  className="btn btn-fix btn-sm"
-                  disabled={busy}
-                  onClick={() =>
-                    startCheckout(
-                      "repair",
-                      repairOption === "part_advance" ? "repair_part_advance" : "repair_full"
-                    )
-                  }
-                >
-                  {busy
-                    ? "Creating Razorpay Order…"
-                    : repairOption === "part_advance"
-                      ? `Pay Part Advance ${inr(Number(customAdvance || defaultAdvance))} via Razorpay`
-                      : `Pay Full Repair ${inr(effectiveRepairTotal)} via Razorpay`}
-                </button>
-              </div>
+              <button
+                type="button"
+                className="btn btn-fix btn-sm"
+                disabled={busy}
+                onClick={() => startCheckout("repair", "repair_full")}
+              >
+                {busy ? "Creating Razorpay Order…" : `Pay ${inr(repairRemaining)} via Razorpay`}
+              </button>
             </div>
           )}
         </div>

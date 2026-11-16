@@ -9,7 +9,6 @@ import type { CaseOps } from "./ops";
 import { CHOOSE_NEW_PHONE_LINK, askControl, autoRequoteKey, requotable, staleDecisionKey, swapRefusal, swapWhy } from "./answerAsks";
 import { IdentityOverride } from "./AnswerAskForms";
 import { GradeRow } from "./GradeRow";
-import { RazorpayPaymentPanel } from "./RazorpayPaymentPanel";
 
 /**
  * THE ANSWER, first, once the test is on the case (owner, 2026-10-17: "Why asking
@@ -200,7 +199,7 @@ export function AnswerCard({
   onSwap: () => void;
 }) {
   const { view, busy, save, act, editable } = ops;
-  const [confirm, setConfirm] = useState<null | "repair" | "walk">(null);
+  const [confirm, setConfirm] = useState<null | "walk">(null);
   const [reason, setReason] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [acting, setActing] = useState(false);
@@ -407,43 +406,12 @@ export function AnswerCard({
             {editable && swapNo ? <Small tone="ink">{swapNo}</Small> : null}
           </Tile>
         </div>
-
-        <RazorpayPaymentPanel
-          caseId={view.id}
-          caseRef={view.ref}
-          mode={w.customerPays !== null && w.customerPays > 0 ? "both" : "repair"}
-          repairAmount={effectiveRepairAmount}
-          swapAmount={w.customerPays}
-          customerName={view.customer?.name}
-          customerPhone={view.customer?.phone}
-        />
       </div>
 
       {/* What the customer chose — at the counter only; a closed or read-only case has nothing to choose */}
       {editable ? (
       <div className="border-t border-line px-5 py-3 space-y-2 rounded-b-[14px] no-print">
-        {confirm === "repair" ? (
-          <div className="rounded-[12px] border border-line p-3 space-y-3">
-            <div className="text-[14px] font-semibold">Closes the case for repair ({inr(effectiveRepairAmount)}). Customer can pay Part Advance or Full amount via Razorpay:</div>
-            <RazorpayPaymentPanel
-              caseId={view.id}
-              caseRef={view.ref}
-              mode="repair"
-              repairAmount={effectiveRepairAmount}
-              swapAmount={w.customerPays}
-              customerName={view.customer?.name}
-              customerPhone={view.customer?.phone}
-            />
-            <div className="flex flex-wrap gap-2">
-              <button type="button" className="btn btn-fix btn-sm" disabled={acting} onClick={() => run("choose_repair")}>
-                {acting ? "Closing…" : "Confirm: Customer will repair"}
-              </button>
-              <button type="button" className="btn btn-sm btn-ghost" disabled={acting} onClick={() => setConfirm(null)}>
-                Not yet
-              </button>
-            </div>
-          </div>
-        ) : confirm === "walk" ? (
+        {confirm === "walk" ? (
           <div className="rounded-[12px] border border-line p-3 space-y-2">
             <div className="text-[14px] font-semibold">Closes the case. Why? (optional)</div>
             <div className="flex flex-wrap gap-2" role="group" aria-label="Why they left (optional)">
@@ -468,16 +436,13 @@ export function AnswerCard({
               <button
                 type="button"
                 className="btn btn-fix !whitespace-normal !px-3 leading-tight"
-                disabled={busy}
-                onClick={() => {
-                  setErr(null);
-                  setConfirm("repair");
-                }}
+                disabled={busy || acting}
+                onClick={() => run("choose_repair")}
               >
-                Customer will repair ({inr(effectiveRepairAmount)})
+                {acting ? "Saving…" : `Opted repair (${inr(effectiveRepairAmount)})`}
               </button>
               <button type="button" className="btn btn-up !whitespace-normal !px-3 leading-tight" disabled={o.actions.swap !== null} title={o.actions.swap ?? undefined} onClick={onSwap}>
-                Swap up
+                {w.customerPays !== null && w.customerPays > 0 ? "Upgrade · Pay via Razorpay" : "Swap up"}
               </button>
             </div>
             {o.actions.walkAway === null ? (

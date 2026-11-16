@@ -59,8 +59,6 @@ export type CaseRazorpaySummary = {
     totalPayable: number | null;
     paidAmount: number;
     remainingBalance: number;
-    suggestedAdvance: number;
-    hasAdvancePaid: boolean;
     fullyPaid: boolean;
   };
   swap: {
@@ -256,10 +254,6 @@ export async function getCaseRazorpaySummary(caseId: string): Promise<CaseRazorp
     .reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
   const repairRemaining = repairTotal !== null ? Math.max(0, repairTotal - paidRepair) : 0;
-  const suggestedAdvance =
-    repairTotal !== null && repairTotal > 0
-      ? Math.max(100, Math.min(repairTotal - 10, Math.round((repairTotal * 0.3) / 10) * 10))
-      : 0;
 
   const swapRemaining = swapTotal !== null ? Math.max(0, swapTotal - paidSwap) : 0;
 
@@ -272,8 +266,6 @@ export async function getCaseRazorpaySummary(caseId: string): Promise<CaseRazorp
       totalPayable: repairTotal,
       paidAmount: paidRepair,
       remainingBalance: repairRemaining,
-      suggestedAdvance,
-      hasAdvancePaid: paidRepair > 0 && repairRemaining > 0,
       fullyPaid: repairTotal !== null && repairTotal > 0 && repairRemaining === 0,
     },
     swap: {
@@ -317,7 +309,8 @@ export async function createRazorpayOrder(
   const { repairTotal, swapTotal, customerName: dbName, customerPhone: dbPhone } = resolveCaseTotals(c);
 
   const journey = input.journey;
-  const plan = input.paymentPlan;
+  const plan: RazorpayPaymentPlan =
+    journey === "repair" ? "repair_full" : input.paymentPlan === "swap_emi" ? "swap_emi" : "swap_direct";
   let totalCasePayable = 0;
   let amountToCharge = 0;
   let remainingDue = 0;
@@ -339,27 +332,9 @@ export async function createRazorpayOrder(
       throw new HttpError(400, "Repair amount is already paid in full for this case.");
     }
 
-    if (plan === "repair_part_advance") {
-      stage = "advance";
-      const defaultAdv = Math.max(100, Math.round((balance * 0.3) / 10) * 10);
-      const requestedAdv =
-        typeof input.customAdvanceAmount === "number" && input.customAdvanceAmount > 0
-          ? Math.round(input.customAdvanceAmount)
-          : defaultAdv;
-      if (requestedAdv <= 0 || requestedAdv >= balance) {
-        throw new HttpError(400, `Part advance must be between ₹1 and ₹${balance - 1}.`);
-      }
-      amountToCharge = requestedAdv;
-      remainingDue = balance - amountToCharge;
-    } else if (plan === "repair_remaining") {
-      stage = "remaining";
-      amountToCharge = balance;
-      remainingDue = 0;
-    } else {
-      stage = "full";
-      amountToCharge = balance;
-      remainingDue = 0;
-    }
+    stage = "full";
+    amountToCharge = balance;
+    remainingDue = 0;
   } else if (journey === "swap") {
     totalCasePayable =
       typeof input.overrideTotalAmount === "number" && input.overrideTotalAmount > 0

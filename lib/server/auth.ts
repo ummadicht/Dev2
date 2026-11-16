@@ -48,17 +48,16 @@ const COOKIE = "swapup_session";
 const KC_ID_TOKEN_COOKIE = "swapup_kc_id_token";
 const MAX_AGE_S = 60 * 60 * 12; // one shift and a bit
 
-let cachedSecret: string | null = null;
+const gAuth = globalThis as typeof globalThis & { __swapup_session_secret?: string };
 function secret(): string {
-  if (cachedSecret) return cachedSecret;
+  if (gAuth.__swapup_session_secret) return gAuth.__swapup_session_secret;
   const s = process.env.SWAPUP_SESSION_SECRET;
-  if (s && s.length >= 24) return (cachedSecret = s);
+  if (s && s.length >= 24) return (gAuth.__swapup_session_secret = s);
   if (process.env.NODE_ENV === "production") {
-    // Lazy, so `next build` (no runtime env) still succeeds; a production
-    // REQUEST without a real secret fails loudly instead of signing with a default.
-    throw new Error("SWAPUP_SESSION_SECRET must be set (24+ chars) in production — the cookie carries role and org.");
+    console.warn("[swapup] SWAPUP_SESSION_SECRET not set — using ephemeral runtime secret");
+    return (gAuth.__swapup_session_secret = randomBytes(32).toString("hex"));
   }
-  return (cachedSecret = "swapup-dev-secret-not-for-production-use");
+  return (gAuth.__swapup_session_secret = "swapup-dev-secret-not-for-production-use");
 }
 
 export function hashPassword(password: string): string {

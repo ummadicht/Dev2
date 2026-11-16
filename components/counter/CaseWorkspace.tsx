@@ -307,13 +307,13 @@ export function CaseWorkspace({
         <div className="mb-4 space-y-3">
           <Banner tone="info">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <span>Closed {fmtWhen(view.closedAt)} — the customer is repairing it.</span>
+              <span>Closed {fmtWhen(view.closedAt)} — customer opted repair.</span>
               <div className="flex items-center gap-2 no-print">
                 <Link href={`/cases/${view.id}/receipt?autoprint=1`} className="btn btn-sm !min-h-[28px] !py-0.5 !px-2.5 !text-[12px]">
-                  🖨 Print repair receipt
+                  🖨 Print repair bill
                 </Link>
                 <Link href={`/cases/${view.id}/receipt?email=1`} className="btn btn-sm btn-ghost !min-h-[28px] !py-0.5 !px-2.5 !text-[12px]">
-                  ✉ Email repair receipt
+                  ✉ Email repair bill
                 </Link>
               </div>
             </div>
