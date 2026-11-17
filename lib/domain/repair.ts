@@ -175,3 +175,39 @@ export function estimateRepair(input: {
 
   return { ...base, status: "quoted", basis: "book", labour, gst, carePlusFee: fee, customerPays, listTotal };
 }
+
+/** Minimum repair estimate (₹3,500) when a broken part is missing from the Catalogue repair price book. */
+export const MIN_UNPRICED_REPAIR_COST: Rupees = 3500;
+
+/**
+ * Effective repair estimate with the ₹3,500 minimum rule:
+ * - Phone is under Catalogue repair price book (`status === "quoted"` and `customerPays !== null`, or covered ₹0,
+ *   or manual service centre quote): returns the exact existing `customerPays` sum.
+ * - Nothing to repair (`status === "nothing_to_repair"` and `!hasRepairNeed`): returns `null`.
+ * - Phone part repair cost is missing from the Catalogue repair price book (`unpriced`, `needs_inspection`,
+ *   or `null` when repair is needed): sums any catalogued parts present in `lines` (+ optional labour/GST)
+ *   and returns `Math.max(3500, partialSum)`.
+ */
+export function repairCostWithMinimum(
+  repair: Partial<Pick<RepairEstimate, "status" | "customerPays" | "lines">> | null | undefined,
+  opts?: { hasRepairNeed?: boolean; labour?: Rupees; gstBp?: number }
+): Rupees | null {
+  if (typeof repair?.customerPays === "number" && Number.isFinite(repair.customerPays) && (repair.status === "quoted" || repair.status === undefined)) {
+    return repair.customerPays;
+  }
+  if (repair?.status === "nothing_to_repair" && !opts?.hasRepairNeed) {
+    return null;
+  }
+  if (!repair) {
+    return opts?.hasRepairNeed ? MIN_UNPRICED_REPAIR_COST : null;
+  }
+  const lines = Array.isArray(repair.lines) ? repair.lines : [];
+  const partsCharged = lines.reduce((sum, line) => sum + (Number.isFinite(line.charged) ? line.charged : 0), 0);
+  if (partsCharged <= 0) {
+    return MIN_UNPRICED_REPAIR_COST;
+  }
+  const labour = opts?.labour ?? 0;
+  const gst = opts?.gstBp ? Math.round(((partsCharged + labour) * opts.gstBp) / 10_000) : 0;
+  return Math.max(MIN_UNPRICED_REPAIR_COST, partsCharged + labour + gst);
+}
+

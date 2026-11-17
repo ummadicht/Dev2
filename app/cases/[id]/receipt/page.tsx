@@ -10,6 +10,7 @@ import type { CaseView } from "@/lib/server/cases";
 import { getStore, getOrg } from "@/lib/server/scope";
 import { getCaseRazorpaySummary, type RazorpayPaymentPlan } from "@/lib/server/razorpay";
 import { inr, fmtBp } from "@/lib/domain/money";
+import { repairCostWithMinimum } from "@/lib/domain/repair";
 import { maskImei } from "@/lib/domain/imei";
 import { PrintBar } from "@/components/counter/PrintBar";
 import { conditionSummary, faultLabels, fmtWhen, idTypeLabel, maskPhone } from "@/components/counter/shared";
@@ -94,7 +95,10 @@ export default async function ReceiptPage({
     : paidPayments;
   const paymentsToShow = filteredPayments.length > 0 ? filteredPayments : paidPayments;
 
-  const hasRepairQuote = (rzpSummary.repair.totalPayable ?? 0) > 0 || v.status === "repair_chosen";
+  const effectiveRepairTotal =
+    repairCostWithMinimum(v.repair, { hasRepairNeed: v.status === "repair_chosen" || v.faults.length > 0 }) ??
+    rzpSummary.repair.totalPayable;
+  const hasRepairQuote = (effectiveRepairTotal ?? 0) > 0 || v.status === "repair_chosen";
   const hasRazorpayPayments = paidPayments.length > 0;
 
   if (!v.lockedAt && !hasRepairQuote && !hasRazorpayPayments) {
@@ -102,7 +106,7 @@ export default async function ReceiptPage({
       <Shell>
         <div className="card card-pad text-center">
           <div className="text-[18px] font-semibold">Not traded in or paid yet</div>
-          <p className="hint">Printed once a trade-in is locked, a repair is booked, or a Razorpay payment is completed.</p>
+          <p className="hint">Printed once a trade-in is locked, a repair estimate is recorded, or a Razorpay swap payment is completed.</p>
           <Link href={`/cases/${v.id}`} className="btn btn-sm mt-4">
             ← Back
           </Link>
@@ -152,7 +156,9 @@ export default async function ReceiptPage({
     (paymentsToShow.length > 0 && paymentsToShow.every((p) => p.journey === "repair"));
 
   const receiptTitle = isRepairReceipt
-    ? "Repair & Payment Receipt"
+    ? hasRazorpayPayments
+      ? "Repair & Payment Receipt"
+      : "Repair Bill"
     : hasRazorpayPayments && !v.lockedAt
       ? "SwapUp Payment Receipt"
       : "Exchange receipt";
@@ -263,8 +269,8 @@ export default async function ReceiptPage({
           </section>
         ) : null}
 
-        {/* Repair Bill Section (when customer opted for repair or paid for repair) */}
-        {isRepairReceipt && rzpSummary.repair.totalPayable ? (
+        {/* Repair Bill Section */}
+        {isRepairReceipt && effectiveRepairTotal !== null ? (
           <section className="mt-6">
             <h2 className="section-title mb-1.5">Repair summary</h2>
             <table className="w-full border-collapse">
@@ -272,23 +278,35 @@ export default async function ReceiptPage({
                 {(v.repair?.lines ?? []).map((line) => (
                   <tr key={line.part} className="border-b border-line">
                     <td className="py-1.5 pr-3 text-ink-2">{line.label}</td>
-                    <td className="py-1.5 text-right num whitespace-nowrap">{inr(line.listPrice)}</td>
+                    <td className="py-1.5 text-right num whitespace-nowrap">
+                      {line.listPrice != null ? inr(line.listPrice) : "Not in price book"}
+                    </td>
                   </tr>
                 ))}
                 <tr className="border-b border-line">
-                  <td className="py-2 pr-3 font-semibold">Total repair estimate</td>
-                  <td className="py-2 text-right num font-semibold whitespace-nowrap">{inr(rzpSummary.repair.totalPayable)}</td>
+                  <td className="py-2 pr-3 font-semibold">Estimated repair cost</td>
+                  <td className="py-2 text-right num font-semibold whitespace-nowrap">{inr(effectiveRepairTotal)}</td>
                 </tr>
-                <tr className="border-b border-line">
-                  <td className="py-2 pr-3 text-up font-semibold">Paid via Razorpay</td>
-                  <td className="py-2 text-right num font-bold text-up whitespace-nowrap">− {inr(rzpSummary.repair.paidAmount)}</td>
-                </tr>
-                <tr>
-                  <td className="py-3 pr-3 text-[16px] font-[760]">Balance due</td>
-                  <td className="py-3 text-right num text-[20px] font-[780] whitespace-nowrap">
-                    {inr(rzpSummary.repair.remainingBalance)}
-                  </td>
-                </tr>
+                {rzpSummary.repair.paidAmount > 0 ? (
+                  <>
+                    <tr className="border-b border-line">
+                      <td className="py-2 pr-3 text-up font-semibold">Paid via Razorpay</td>
+                      <td className="py-2 text-right num font-bold text-up whitespace-nowrap">− {inr(rzpSummary.repair.paidAmount)}</td>
+                    </tr>
+                    <tr>
+                      <td className="py-3 pr-3 text-[16px] font-[760]">Balance due</td>
+                      <td className="py-3 text-right num text-[20px] font-[780] whitespace-nowrap">
+                        {inr(Math.max(0, effectiveRepairTotal - rzpSummary.repair.paidAmount))}
+                      </td>
+                    </tr>
+                  </>
+                ) : (
+                  <tr>
+                    <td colSpan={2} className="py-2.5 text-ink-2 font-medium">
+                      Status: Customer opted to repair and walked out — no Razorpay payment collected.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </section>
@@ -384,8 +402,8 @@ export default async function ReceiptPage({
           <ol className="list-decimal pl-5 space-y-1 text-[12.5px] text-ink-2">
             {isRepairReceipt ? (
               <>
-                <li>Repair spare parts are priced as per the published OEM service schedule for the model above.</li>
-                <li>Any Razorpay payment completed for this repair is recorded above against the total bill.</li>
+                <li>Repair spare parts are priced as per the published OEM service schedule when available, or a ₹3,500 minimum estimate otherwise.</li>
+                <li>Customer opted to repair and walked out; no payment is accepted via Razorpay for repair estimates.</li>
                 <li>Only the ID&apos;s last four characters are recorded.</li>
               </>
             ) : (

@@ -348,3 +348,16 @@ test("static: one step at a time, details closed by default, Back / Next docked"
   assert.match(card, /<details[^>]*data-details/);
   assert.ok(!/<details[^>]*\bopen\b/.test(card), "Show details is closed by default");
 });
+
+test("static: repair flow never offers Razorpay payment and states customer opted to repair and walked out", () => {
+  const ws = read("./CaseWorkspace.tsx");
+  const sr = read("./StepRepair.tsx");
+  const rzp = read("./RazorpayPaymentPanel.tsx");
+  assert.ok(ws.includes("customer opted to repair and walked out."));
+  assert.ok(!ws.includes("<RazorpayPaymentPanel"));
+  assert.ok(!sr.includes("RazorpayPaymentPanel"));
+  assert.ok(!rzp.includes("Pay for Repair via Razorpay"));
+  assert.ok(!rzp.includes("Full Repair Payment"));
+  assert.ok(!rzp.includes("Repair Payment"));
+});
+

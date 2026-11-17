@@ -1,6 +1,9 @@
 import { createHmac } from "node:crypto";
 import { query, queryOne, execute, tx, nowIso, newId, audit } from "./db";
 import { HttpError, type SessionUser } from "./auth";
+import { MIN_UNPRICED_REPAIR_COST, repairCostWithMinimum, type RepairEstimate } from "../domain/repair";
+import { unrecordedDefect } from "../domain/answer";
+import type { ConditionAnswers, FaultId } from "../domain/condition";
 
 export type RazorpayJourney = "repair" | "swap";
 
@@ -160,7 +163,10 @@ type CasePricingRow = {
   ref: string;
   org_id: string;
   store_id: string;
+  status: string;
   customer: string | null;
+  faults: string | null;
+  condition: string | null;
   repair: string | null;
   manual_repair: string | null;
   payable: number | null;
@@ -171,10 +177,10 @@ type CasePricingRow = {
   upgrade: string | null;
 };
 
-export const DEFAULT_REPAIR_AMOUNT = 5000;
+export const DEFAULT_REPAIR_AMOUNT = MIN_UNPRICED_REPAIR_COST;
 
 function resolveCaseTotals(row: CasePricingRow): {
-  repairTotal: number;
+  repairTotal: number | null;
   swapTotal: number | null;
   customerName: string | null;
   customerPhone: string | null;
@@ -183,17 +189,27 @@ function resolveCaseTotals(row: CasePricingRow): {
   try {
     if (row.manual_repair) {
       const mr = JSON.parse(row.manual_repair) as { amount?: number };
-      if (typeof mr?.amount === "number" && mr.amount > 0) repairTotal = mr.amount;
+      if (typeof mr?.amount === "number" && mr.amount >= 0) repairTotal = mr.amount;
     }
-    if (repairTotal === null && row.repair) {
-      const rep = JSON.parse(row.repair) as { customerPays?: number | null };
-      if (typeof rep?.customerPays === "number" && rep.customerPays > 0) repairTotal = rep.customerPays;
+    if (repairTotal === null) {
+      const rep = row.repair ? (JSON.parse(row.repair) as Partial<RepairEstimate>) : null;
+      const faults = row.faults ? (JSON.parse(row.faults) as FaultId[]) : [];
+      const condition = row.condition ? (JSON.parse(row.condition) as ConditionAnswers | null) : null;
+      const faultCount = Array.isArray(faults) ? faults.length : 0;
+      const hasConditionIssues = condition && Array.isArray(condition.issues);
+      const hasRepairNeed =
+        row.status === "repair_chosen" ||
+        faultCount > 0 ||
+        Boolean(hasConditionIssues && unrecordedDefect(faultCount, condition));
+      repairTotal = repairCostWithMinimum(rep, { hasRepairNeed });
+      if (repairTotal === null && row.status === "repair_chosen") {
+        repairTotal = DEFAULT_REPAIR_AMOUNT;
+      }
     }
   } catch {
-    // ignore parse error
-  }
-  if (repairTotal === null || repairTotal <= 0) {
-    repairTotal = DEFAULT_REPAIR_AMOUNT;
+    if (row.status === "repair_chosen") {
+      repairTotal = DEFAULT_REPAIR_AMOUNT;
+    }
   }
 
   let swapTotal: number | null = typeof row.payable === "number" && row.payable > 0 ? row.payable : null;
@@ -231,7 +247,7 @@ function resolveCaseTotals(row: CasePricingRow): {
 export async function getCaseRazorpaySummary(caseId: string): Promise<CaseRazorpaySummary> {
   await ensureRazorpayTable();
   const c = await queryOne<CasePricingRow>(
-    `SELECT id, ref, org_id, store_id, customer, repair, manual_repair, payable, trade_value, bonus_value, premium_value, quote, upgrade
+    `SELECT id, ref, org_id, store_id, status, customer, faults, condition, repair, manual_repair, payable, trade_value, bonus_value, premium_value, quote, upgrade
      FROM cases WHERE id = $1`,
     [caseId]
   );
@@ -299,18 +315,20 @@ export async function createRazorpayOrder(
 }> {
   await ensureRazorpayTable();
   const c = await queryOne<CasePricingRow>(
-    `SELECT id, ref, org_id, store_id, customer, repair, manual_repair, payable, trade_value, bonus_value, premium_value, quote, upgrade
+    `SELECT id, ref, org_id, store_id, status, customer, faults, condition, repair, manual_repair, payable, trade_value, bonus_value, premium_value, quote, upgrade
      FROM cases WHERE id = $1`,
     [input.caseId]
   );
   if (!c) throw new HttpError(404, "Case not found.");
 
   const summaryBefore = await getCaseRazorpaySummary(input.caseId);
-  const { repairTotal, swapTotal, customerName: dbName, customerPhone: dbPhone } = resolveCaseTotals(c);
+  const { swapTotal, customerName: dbName, customerPhone: dbPhone } = resolveCaseTotals(c);
 
   const journey = input.journey;
-  const plan: RazorpayPaymentPlan =
-    journey === "repair" ? "repair_full" : input.paymentPlan === "swap_emi" ? "swap_emi" : "swap_direct";
+  if (journey === "repair") {
+    throw new HttpError(400, "Customer opted to repair and walked out — Razorpay payments are not accepted for repair.");
+  }
+  const plan: RazorpayPaymentPlan = input.paymentPlan === "swap_emi" ? "swap_emi" : "swap_direct";
   let totalCasePayable = 0;
   let amountToCharge = 0;
   let remainingDue = 0;
@@ -318,24 +336,7 @@ export async function createRazorpayOrder(
   let emiMonths: number | null = null;
   let emiMonthlyAmount: number | null = null;
 
-  if (journey === "repair") {
-    totalCasePayable =
-      typeof input.overrideTotalAmount === "number" && input.overrideTotalAmount > 0
-        ? Math.round(input.overrideTotalAmount)
-        : repairTotal ?? 0;
-    if (totalCasePayable <= 0) {
-      throw new HttpError(400, "Repair quote is not priced yet for this case.");
-    }
-    const alreadyPaid = summaryBefore.repair.paidAmount;
-    const balance = Math.max(0, totalCasePayable - alreadyPaid);
-    if (balance <= 0) {
-      throw new HttpError(400, "Repair amount is already paid in full for this case.");
-    }
-
-    stage = "full";
-    amountToCharge = balance;
-    remainingDue = 0;
-  } else if (journey === "swap") {
+  if (journey === "swap") {
     totalCasePayable =
       typeof input.overrideTotalAmount === "number" && input.overrideTotalAmount > 0
         ? Math.round(input.overrideTotalAmount)
@@ -607,7 +608,7 @@ export async function sendCaseReceiptEmail(
       imei: string | null;
     }
   >(
-    `SELECT id, ref, org_id, store_id, customer, model_id, variant, imei, repair, manual_repair,
+    `SELECT id, ref, org_id, store_id, status, customer, faults, condition, model_id, variant, imei, repair, manual_repair,
             payable, trade_value, bonus_value, premium_value, quote, upgrade
      FROM cases WHERE id = $1`,
     [input.caseId]
@@ -663,6 +664,10 @@ export async function sendCaseReceiptEmail(
     ? `Payment Receipt · ${c.ref} (${fmtInr(latestPayment.amount)} — ${PLAN_LABELS[latestPayment.payment_plan] ?? latestPayment.payment_plan})`
     : `SwapUp Receipt · ${c.ref} (${storeName})`;
 
+  const isRepairWalkout =
+    paymentsToShow.length === 0 &&
+    (c.status === "repair_chosen" || (repairTotal !== null && repairTotal > 0 && swapTotal === null));
+
   const paymentRowsHtml =
     paymentsToShow.length > 0
       ? paymentsToShow
@@ -683,7 +688,9 @@ export async function sendCaseReceiptEmail(
         </tr>`
           )
           .join("")
-      : `<tr><td colspan="2" style="padding:10px 12px;color:#64748b;">No online Razorpay payments recorded yet.</td></tr>`;
+      : isRepairWalkout
+        ? `<tr><td colspan="2" style="padding:10px 12px;color:#64748b;">Customer opted to repair and walked out — no Razorpay payment collected.</td></tr>`
+        : `<tr><td colspan="2" style="padding:10px 12px;color:#64748b;">No online Razorpay payments recorded yet.</td></tr>`;
 
   const html = `<!DOCTYPE html>
 <html>
@@ -724,11 +731,18 @@ export async function sendCaseReceiptEmail(
         repairTotal !== null && repairTotal > 0
           ? `<div style="margin-bottom:18px;padding:12px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
               <div style="font-size:12px;font-weight:700;text-transform:uppercase;color:#475569;margin-bottom:6px;">Repair Bill Summary</div>
-              <div style="display:flex;justify-content:space-between;font-size:14px;">
-                <span>Total Repair Quote: <strong>${fmtInr(repairTotal)}</strong></span>
-                <span>Paid via Razorpay: <strong style="color:#15803d;">${fmtInr(summary.repair.paidAmount)}</strong></span>
-                <span>Remaining Balance: <strong style="color:#b45309;">${fmtInr(summary.repair.remainingBalance)}</strong></span>
-              </div>
+              ${
+                summary.repair.paidAmount > 0
+                  ? `<div style="display:flex;justify-content:space-between;font-size:14px;">
+                      <span>Total Repair Quote: <strong>${fmtInr(repairTotal)}</strong></span>
+                      <span>Paid via Razorpay: <strong style="color:#15803d;">${fmtInr(summary.repair.paidAmount)}</strong></span>
+                      <span>Remaining Balance: <strong style="color:#b45309;">${fmtInr(summary.repair.remainingBalance)}</strong></span>
+                    </div>`
+                  : `<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:14px;">
+                      <span>Estimated Repair Cost: <strong>${fmtInr(repairTotal)}</strong></span>
+                      <span>Status: <strong>Customer opted to repair and walked out (no Razorpay payment accepted)</strong></span>
+                    </div>`
+              }
             </div>`
           : ""
       }
@@ -773,7 +787,11 @@ export async function sendCaseReceiptEmail(
     `Date: ${dateFormatted}`,
     `Customer: ${customerName || "Walk-in Customer"} (${customerPhone || "—"})`,
     `Device: ${deviceLabel}`,
-    repairTotal ? `Repair Total: ${fmtInr(repairTotal)} | Paid: ${fmtInr(summary.repair.paidAmount)} | Remaining: ${fmtInr(summary.repair.remainingBalance)}` : null,
+    repairTotal
+      ? summary.repair.paidAmount > 0
+        ? `Repair Total: ${fmtInr(repairTotal)} | Paid: ${fmtInr(summary.repair.paidAmount)} | Remaining: ${fmtInr(summary.repair.remainingBalance)}`
+        : `Estimated Repair Cost: ${fmtInr(repairTotal)} | Customer opted to repair and walked out (no Razorpay payment collected)`
+      : null,
     swapTotal ? `Swap Net Payable: ${fmtInr(swapTotal)} | Paid: ${fmtInr(summary.swap.paidAmount)} | Remaining: ${fmtInr(summary.swap.remainingBalance)}` : null,
     "",
     "Razorpay Payments:",

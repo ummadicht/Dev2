@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ErrorText } from "@/components/ui";
 import { inr } from "@/lib/domain/money";
+import { MIN_UNPRICED_REPAIR_COST, repairCostWithMinimum } from "@/lib/domain/repair";
 import type { Offer } from "@/lib/domain/offer";
 import type { AnswerLine, AnswerLineKey } from "@/lib/domain/answer";
 import type { CaseOps } from "./ops";
@@ -248,9 +249,15 @@ export function AnswerCard({
 
   const badge = o.recommendation === "repair" ? "repair" : o.recommendation === "upgrade" ? "swap" : null;
 
-  // Refurb quote — defaults to ₹5,000 when no specific repair quote is set so customer can always opt to repair via Razorpay.
+  // Refurb quote: use exact Catalogue price book sum when quoted; otherwise ₹3,500 minimum (or partial sum) when a fault part is not in the catalogue repair price book.
   const r = o.repair;
-  const effectiveRepairAmount = r.amount !== null && r.amount > 0 ? r.amount : 5000;
+  const hasRepairNeed = !r.nothingToRepair && (view.faults.length > 0 || r.why !== null);
+  const effectiveRepairAmount =
+    r.amount !== null
+      ? r.amount
+      : hasRepairNeed
+        ? repairCostWithMinimum(view.repair, { hasRepairNeed: true })
+        : null;
   const repairWhy = r.amount === null && !r.nothingToRepair ? r.why : null;
   const repairRefusal = o.actions.repair && o.actions.repair !== repairWhy && !(r.nothingToRepair && o.actions.repair === r.why) ? o.actions.repair : null;
   // The server's lines, and its staff-only words.
@@ -363,14 +370,16 @@ export function AnswerCard({
           <Tile label="Repair" recommended={badge === "repair"}>
             {repairL ? (
               <div className={FIGURE}>{repairL.text}</div>
-            ) : (
+            ) : effectiveRepairAmount !== null ? (
               <div className={FIGURE}>or repair it for {inr(effectiveRepairAmount)}</div>
+            ) : (
+              <div className={FIGURE}>Nothing to repair</div>
             )}
             {r.amount !== null && r.detail ? (
               <Small>{r.detail}</Small>
-            ) : (
-              <Small>Standard service estimate ({inr(effectiveRepairAmount)} default)</Small>
-            )}
+            ) : effectiveRepairAmount !== null ? (
+              <Small>Minimum repair estimate ({inr(MIN_UNPRICED_REPAIR_COST)}) — part not in catalogue repair price book</Small>
+            ) : null}
             {repairWhy ? <Small>{repairWhy}</Small> : null}
             {editable && repairRefusal ? <Small tone="ink">{repairRefusal}</Small> : null}
             <TileLink onClick={() => onStep("step-repair")}>Change</TileLink>
@@ -439,7 +448,11 @@ export function AnswerCard({
                 disabled={busy || acting}
                 onClick={() => run("choose_repair")}
               >
-                {acting ? "Saving…" : `Opted repair (${inr(effectiveRepairAmount)})`}
+                {acting
+                  ? "Saving…"
+                  : effectiveRepairAmount !== null
+                    ? `Opted repair (${inr(effectiveRepairAmount)})`
+                    : "Opted repair"}
               </button>
               <button type="button" className="btn btn-up !whitespace-normal !px-3 leading-tight" disabled={o.actions.swap !== null} title={o.actions.swap ?? undefined} onClick={onSwap}>
                 {w.customerPays !== null && w.customerPays > 0 ? "Upgrade · Pay via Razorpay" : "Swap up"}

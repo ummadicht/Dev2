@@ -8,7 +8,6 @@ import { Banner, ErrorText, Money } from "@/components/ui";
 import { inr } from "@/lib/domain/money";
 import type {
   CaseRazorpaySummary,
-  RazorpayJourney,
   RazorpayPaymentPlan,
   RazorpayPaymentRow,
 } from "@/lib/server/razorpay";
@@ -79,9 +78,6 @@ export function RazorpayPaymentPanel({
 }) {
   const router = useRouter();
   const [summary, setSummary] = useState<CaseRazorpaySummary | null>(null);
-  const [activeTab, setActiveTab] = useState<RazorpayJourney>(
-    mode === "swap" ? "swap" : "repair"
-  );
   const [swapOption, setSwapOption] = useState<"direct" | "emi">("direct");
   const [selectedEmiMonths, setSelectedEmiMonths] = useState<number>(6);
   const [busy, setBusy] = useState(false);
@@ -128,17 +124,7 @@ export function RazorpayPaymentPanel({
     void refresh();
   }, [refresh]);
 
-  const effectiveRepairTotal =
-    repairAmount && repairAmount > 0
-      ? repairAmount
-      : summary?.repair.totalPayable && summary.repair.totalPayable > 0
-        ? summary.repair.totalPayable
-        : 5000;
   const effectiveSwapTotal = swapAmount ?? summary?.swap.totalPayable ?? null;
-  const repairPaid = summary?.repair.paidAmount ?? 0;
-  const repairRemaining =
-    effectiveRepairTotal !== null ? Math.max(0, effectiveRepairTotal - repairPaid) : 0;
-
   const swapPaid = summary?.swap.paidAmount ?? 0;
   const swapRemaining =
     effectiveSwapTotal !== null ? Math.max(0, effectiveSwapTotal - swapPaid) : 0;
@@ -155,7 +141,7 @@ export function RazorpayPaymentPanel({
     }
   }
 
-  async function startCheckout(journey: RazorpayJourney, paymentPlan: RazorpayPaymentPlan) {
+  async function startCheckout(paymentPlan: "swap_direct" | "swap_emi") {
     setErr(null);
     setBusy(true);
     try {
@@ -167,9 +153,9 @@ export function RazorpayPaymentPanel({
       }>(`/api/cases/${encodeURIComponent(caseId)}/razorpay`, {
         body: {
           action: "create_order",
-          journey,
+          journey: "swap",
           paymentPlan,
-          overrideTotalAmount: journey === "repair" ? effectiveRepairTotal : effectiveSwapTotal,
+          overrideTotalAmount: effectiveSwapTotal,
           emiMonths: paymentPlan === "swap_emi" ? selectedEmiMonths : null,
           customerName,
           customerPhone,
@@ -306,88 +292,21 @@ export function RazorpayPaymentPanel({
           </span>
           <span className="text-[15px] font-[720] text-ink">
             {mode === "repair"
-              ? "Pay for Repair via Razorpay"
-              : mode === "swap"
-                ? "Pay for Swap Up via Razorpay"
-                : "Razorpay Payment Options"}
+              ? "Repair — No Razorpay Payment"
+              : "Pay for Swap Up via Razorpay"}
           </span>
         </div>
-        {mode === "both" ? (
-          <div className="flex gap-1.5" role="tablist">
-            <button
-              type="button"
-              className="chip !min-h-[32px] !text-[13px]"
-              aria-pressed={activeTab === "repair"}
-              onClick={() => setActiveTab("repair")}
-            >
-              Repair Payment
-            </button>
-            <button
-              type="button"
-              className="chip !min-h-[32px] !text-[13px]"
-              aria-pressed={activeTab === "swap"}
-              onClick={() => setActiveTab("swap")}
-            >
-              Swap Up (EMI / Direct)
-            </button>
-          </div>
-        ) : null}
       </div>
 
-      {/* ─────────────── REPAIR PAYMENT FLOW ─────────────── */}
-      {(mode === "repair" || (mode === "both" && activeTab === "repair")) && (
-        <div className="space-y-3">
-          {effectiveRepairTotal === null || effectiveRepairTotal <= 0 ? (
-            <p className="text-[13.5px] text-muted">
-              Record a fault or enter a repair quote first to enable Razorpay repair payments.
-            </p>
-          ) : repairRemaining === 0 ? (
-            <Banner tone="up">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <strong>Repair paid in full via Razorpay ({inr(effectiveRepairTotal)}).</strong>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-ghost !min-h-[30px] !py-1 !px-2.5 !text-[12.5px]"
-                    onClick={() => {
-                      setEmailComposerFor("all");
-                      setErr(null);
-                    }}
-                  >
-                    ✉ Email receipt
-                  </button>
-                  <Link
-                    href={`/cases/${caseId}/receipt?autoprint=1`}
-                    className="btn btn-sm !min-h-[30px] !py-1 !px-2.5 !text-[12.5px]"
-                  >
-                    🖨 Print receipt
-                  </Link>
-                </div>
-              </div>
-            </Banner>
-          ) : (
-            <div className="rounded-[10px] border border-line bg-surface p-3.5 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <div className="text-[14px] font-[720] text-ink">Full Repair Payment</div>
-                <p className="text-[12.5px] text-ink-2 mt-0.5 leading-snug">
-                  Pay the complete repair quote of <strong className="num">{inr(repairRemaining)}</strong> via Razorpay.
-                </p>
-              </div>
-              <button
-                type="button"
-                className="btn btn-fix btn-sm"
-                disabled={busy}
-                onClick={() => startCheckout("repair", "repair_full")}
-              >
-                {busy ? "Creating Razorpay Order…" : `Pay ${inr(repairRemaining)} via Razorpay`}
-              </button>
-            </div>
-          )}
-        </div>
-      )}
+      {/* ─────────────── REPAIR DOES NOT ACCEPT RAZORPAY PAYMENT ─────────────── */}
+      {mode === "repair" ? (
+        <Banner tone="info">
+          Customer opted to repair and walked out — no Razorpay payment is accepted for repair.
+        </Banner>
+      ) : null}
 
       {/* ─────────────── SWAP / UPGRADE PAYMENT FLOW (DIRECT OR EMI) ─────────────── */}
-      {(mode === "swap" || (mode === "both" && activeTab === "swap")) && (
+      {mode !== "repair" && (
         <div className="space-y-3">
           {effectiveSwapTotal === null || effectiveSwapTotal <= 0 ? (
             <p className="text-[13.5px] text-muted">
@@ -536,7 +455,7 @@ export function RazorpayPaymentPanel({
                   className="btn btn-up btn-sm"
                   disabled={busy}
                   onClick={() =>
-                    startCheckout("swap", swapOption === "emi" ? "swap_emi" : "swap_direct")
+                    startCheckout(swapOption === "emi" ? "swap_emi" : "swap_direct")
                   }
                 >
                   {busy

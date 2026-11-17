@@ -4,7 +4,7 @@ import { pctOf, inr, roundDown, fmtBp } from "./money.ts";
 import { readImei, luhnValid, maskImei } from "./imei.ts";
 import { FAULT_BY_ID, conditionFromFaults, conditionFloor, faultsNamedByCondition, healedCondition, partsForFaults, withConditionFaults, type ConditionAnswers, type FaultId } from "./condition.ts";
 import { priceFromCard, linesSum } from "./ratecard.ts";
-import { estimateRepair } from "./repair.ts";
+import { estimateRepair, MIN_UNPRICED_REPAIR_COST, repairCostWithMinimum } from "./repair.ts";
 import { computeBonus, validateCampaign, bestCampaign, type BonusContext } from "./bonus.ts";
 import { CARD, BOOK, CAMPAIGN } from "./fixtures.ts";
 
@@ -201,3 +201,72 @@ test("repair: GST on parts + labour, plan fee is tax-inclusive", () => {
   assert.equal(cp.customerPays, 3699);
   assert.equal(cp.gst, 0);
 });
+
+test("repairCostWithMinimum: uses exact catalogue pricebook sum when quoted, 3500 min when missing from catalogue pricebook", () => {
+  assert.equal(MIN_UNPRICED_REPAIR_COST, 3500);
+  // Catalogue sum < 3500 stays at exact catalogue sum (existing logic)
+  const smallBook = estimateRepair({
+    book: BOOK,
+    modelId: "galaxy-s22",
+    faults: ["back_cracked"],
+    coverage: "none",
+    policy: { labour: 300, carePlusFee: 0, gstBp: 0 },
+  });
+  assert.equal(smallBook.status, "quoted");
+  assert.equal(repairCostWithMinimum(smallBook), 2800);
+
+  // Warranty-covered stays ₹0
+  const free = estimateRepair({
+    book: BOOK,
+    modelId: "galaxy-s22",
+    faults: ["battery_drain"],
+    coverage: "warranty",
+    policy: { labour: 500, carePlusFee: 0, gstBp: 0 },
+  });
+  assert.equal(repairCostWithMinimum(free), 0);
+
+  // Nothing to repair returns null
+  const clean = estimateRepair({
+    book: BOOK,
+    modelId: "galaxy-s22",
+    faults: [],
+    coverage: "none",
+    policy: { labour: 500, carePlusFee: 0, gstBp: 0 },
+  });
+  assert.equal(repairCostWithMinimum(clean), null);
+  assert.equal(repairCostWithMinimum(null), null);
+
+  // Part missing from catalogue repair price book defaults to 3500 minimum
+  const unpriced = estimateRepair({
+    book: BOOK,
+    modelId: "galaxy-a52",
+    faults: ["battery_drain"],
+    coverage: "none",
+    policy: { labour: 500, carePlusFee: 0, gstBp: 0 },
+  });
+  assert.equal(unpriced.status, "unpriced");
+  assert.equal(repairCostWithMinimum(unpriced), 3500);
+
+  // Partial pricebook match: sums priced parts in book and enforces max(3500, sum)
+  const mixedLow = estimateRepair({
+    book: BOOK,
+    modelId: "galaxy-s22",
+    faults: ["back_cracked", "mic"],
+    coverage: "none",
+    policy: { labour: 500, carePlusFee: 0, gstBp: 0 },
+  });
+  assert.equal(mixedLow.status, "unpriced");
+  assert.equal(repairCostWithMinimum(mixedLow), 3500);
+
+  const mixedHigh = estimateRepair({
+    book: BOOK,
+    modelId: "galaxy-s22",
+    faults: ["screen_cracked", "mic"],
+    coverage: "none",
+    policy: { labour: 500, carePlusFee: 0, gstBp: 0 },
+  });
+  assert.equal(mixedHigh.status, "unpriced");
+  assert.equal(repairCostWithMinimum(mixedHigh), 14000);
+  assert.equal(repairCostWithMinimum(null, { hasRepairNeed: true }), 3500);
+});
+

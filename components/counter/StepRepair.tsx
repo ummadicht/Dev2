@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import { Money, ErrorText } from "@/components/ui";
+import { MIN_UNPRICED_REPAIR_COST, repairCostWithMinimum } from "@/lib/domain/repair";
+import { inr } from "@/lib/domain/money";
 import { StepCard, StepFigure, StepNoFigure } from "./StepCard";
 import { REPAIR_SOURCE, repairLines, repairQuotePatch, repairQuoteProblem, repairStep, type RepairSourceId } from "./caseSteps";
-import { RazorpayPaymentPanel } from "./RazorpayPaymentPanel";
 import type { CaseOps } from "./ops";
 
 /**
@@ -12,7 +13,7 @@ import type { CaseOps } from "./ops";
  * comes from — the choice is the reason the server keeps with it (caseSteps.ts repairQuotePatch).
  */
 function RepairQuoteForm({ ops, sources, onDone }: { ops: CaseOps; sources: RepairSourceId[]; onDone?: () => void }) {
-  const [amount, setAmount] = useState("5000");
+  const [amount, setAmount] = useState("");
   const [source, setSource] = useState<RepairSourceId>(sources[0] ?? "job_sheet");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -47,7 +48,7 @@ function RepairQuoteForm({ ops, sources, onDone }: { ops: CaseOps; sources: Repa
               setAmount(e.target.value);
               setErr(null);
             }}
-            placeholder="e.g. 5000"
+            placeholder={`e.g. ${MIN_UNPRICED_REPAIR_COST}`}
           />
           <button className="btn btn-primary shrink-0" disabled={busy || !amount.trim()}>
             {busy ? "Saving…" : "Save"}
@@ -69,8 +70,10 @@ function RepairQuoteForm({ ops, sources, onDone }: { ops: CaseOps; sources: Repa
 }
 
 /**
- * REPAIR QUOTE — what the customer pays to keep the phone, as ONE figure (defaults to ₹5,000 when
- * no fault-specific quote is set so the customer can immediately pay for repair via Razorpay).
+ * REPAIR QUOTE — what the customer pays to keep the phone:
+ * - Uses Catalogue repair price book sum when quoted (existing logic).
+ * - Uses ₹3,500 minimum (or partial book sum if higher) when broken parts are not in the price book.
+ * - Repair payments are not accepted via Razorpay (if chosen, customer opted to repair and walked out).
  */
 export function StepRepair({ ops }: { ops: CaseOps }) {
   const { view, editable, save } = ops;
@@ -78,7 +81,18 @@ export function StepRepair({ ops }: { ops: CaseOps }) {
   const [override, setOverride] = useState(false);
   const s = repairStep(view);
   const lines = repairLines(view.repair);
-  const effectiveRepairAmount = s.amount !== null && s.amount > 0 ? s.amount : 5000;
+  const noRepair = s.headline === "Nothing to repair" || s.headline === "Choose the phone first" || s.headline === "Not priced yet";
+  const effectiveRepairAmount =
+    s.amount !== null
+      ? s.amount
+      : noRepair
+        ? null
+        : repairCostWithMinimum(view.repair, { hasRepairNeed: true });
+
+  const line =
+    s.amount !== null || noRepair
+      ? s.line
+      : `${s.line ? `${s.line} ` : ""}Minimum repair estimate (${inr(MIN_UNPRICED_REPAIR_COST)}) applied when part repair cost is not in catalogue repair price book.`;
 
   const details =
     lines.length || view.manualRepair ? (
@@ -101,13 +115,22 @@ export function StepRepair({ ops }: { ops: CaseOps }) {
       id="step-repair"
       title="Repair quote"
       figure={
-        <StepFigure tone="fix">
-          <Money value={effectiveRepairAmount} />
-        </StepFigure>
+        effectiveRepairAmount !== null ? (
+          <StepFigure tone="fix">
+            <Money value={effectiveRepairAmount} />
+          </StepFigure>
+        ) : (
+          <StepNoFigure>{s.headline ?? "No repair needed"}</StepNoFigure>
+        )
       }
-      line={s.amount !== null && s.amount > 0 ? s.line : "Default repair estimate (₹5,000) · ready for Razorpay payment."}
+      line={line}
       details={details}
     >
+      {view.status === "repair_chosen" ? (
+        <p className="text-[13.5px] text-ink-2">
+          Customer opted to repair and walked out — no Razorpay payment is collected for repair.
+        </p>
+      ) : null}
       {editable && view.manualRepair ? (
         <button type="button" className="btn btn-sm" onClick={async () => setErr(await save({ manualRepair: null }, { manualRepair: null }))}>
           {view.repairNotServiced ? "Remove quote" : "Use price book"}
@@ -123,19 +146,7 @@ export function StepRepair({ ops }: { ops: CaseOps }) {
           </button>
         )
       ) : null}
-      <div className="mt-4">
-        <RazorpayPaymentPanel
-          caseId={view.id}
-          caseRef={view.ref}
-          mode="repair"
-          repairAmount={effectiveRepairAmount}
-          swapAmount={view.offer?.swap.customerPays ?? null}
-          customerName={view.customer?.name}
-          customerPhone={view.customer?.phone}
-        />
-      </div>
       {err ? <ErrorText error={err} /> : null}
     </StepCard>
   );
 }
-

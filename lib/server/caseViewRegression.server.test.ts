@@ -133,3 +133,31 @@ test("razorpay receipt email fallback handles legacy unknown payment_plan labels
   assert.equal(receipt.ok, true);
   assert.match(receipt.text, /legacy_custom_plan/);
 });
+
+test("razorpay rejects repair checkout, uses 3500 minimum for unpriced parts, and prints walk-out repair bill", async () => {
+  const c = await cases.createCase(adv, { customerName: "Walkout Repair", customerPhone: "9820012346" });
+  const now = new Date().toISOString();
+  db()
+    .prepare(`UPDATE cases SET status = 'repair_chosen', faults = ?, closed_at = ?, updated_at = ? WHERE id = ?`)
+    .run(JSON.stringify(["mic"]), now, now, c.id);
+
+  const summary = await rzp.getCaseRazorpaySummary(c.id);
+  assert.equal(summary.repair.totalPayable, 3500);
+  assert.equal(summary.repair.paidAmount, 0);
+
+  await assert.rejects(
+    rzp.createRazorpayOrder(adv, {
+      caseId: c.id,
+      journey: "repair",
+      paymentPlan: "repair_full",
+    }),
+    (e: Error & { status?: number }) => e.status === 400 && /walked out/i.test(e.message)
+  );
+
+  const bill = await rzp.sendCaseReceiptEmail(adv, { caseId: c.id, toEmail: "walkout@example.invalid" });
+  assert.equal(bill.ok, true);
+  assert.match(bill.text, /₹3,500/);
+  assert.match(bill.text, /opted to repair and walked out/i);
+  assert.doesNotMatch(bill.html, /Paid via Razorpay/);
+});
+
